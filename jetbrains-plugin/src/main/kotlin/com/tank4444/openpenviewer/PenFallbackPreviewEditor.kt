@@ -1,5 +1,6 @@
 package com.tank4444.openpenviewer
 
+import com.intellij.openapi.actionSystem.ActionManager
 import com.intellij.openapi.fileEditor.FileEditor
 import com.intellij.openapi.fileEditor.FileEditorState
 import com.intellij.openapi.util.UserDataHolderBase
@@ -34,16 +35,36 @@ class PenFallbackPreviewEditor(
             horizontalAlignment = SwingConstants.LEFT
         }
         val desc = JBLabel(
-            "<html><body style='width: 420px;'>" +
+            "<html><body style='width: 460px;'>" +
                 "<p>JCEF (embedded Chromium) is not available in the current Android Studio Boot Runtime.</p>" +
                 (if (reason != null) "<p style='color: gray;'>Details: $reason</p>" else "") +
                 "<p><b>How to enable built-in preview:</b><br/>" +
-                "1. Open <i>Help → Find Action...</i> and run <b>Choose Boot Java Runtime for the IDE</b>.<br/>" +
-                "2. Select a JetBrains Runtime build with <b>JCEF</b> support and restart Android Studio.</p>" +
+                "1. Click <b>Choose Boot Java Runtime...</b> below (or open <i>Help → Find Action... → Choose Boot Java Runtime for the IDE</i>).<br/>" +
+                "2. Select a JetBrains Runtime build with <b>JCEF</b> support.<br/>" +
+                "3. Restart Android Studio.</p>" +
                 "</body></html>"
         )
 
-        val actions = JBPanel<JBPanel<*>>(FlowLayout(FlowLayout.LEFT, 0, 12)).apply {
+        val actions = JBPanel<JBPanel<*>>(FlowLayout(FlowLayout.LEFT, 8, 12)).apply {
+            val chooseRuntimeAction =
+                ActionManager.getInstance().getAction("ChooseRuntime")
+                    ?: ActionManager.getInstance().getAction("ChooseBootRuntime")
+
+            if (chooseRuntimeAction != null) {
+                val chooseRuntimeBtn = JButton("Choose Boot Java Runtime...").apply {
+                    addActionListener {
+                        ActionManager.getInstance().tryToExecute(
+                            chooseRuntimeAction,
+                            null,
+                            this@apply,
+                            null,
+                            true
+                        )
+                    }
+                }
+                add(chooseRuntimeBtn)
+            }
+
             val openExternalBtn = JButton("Open .pen in Desktop App").apply {
                 addActionListener {
                     try {
