@@ -1,103 +1,18 @@
 /**
- * Figma ライクな距離測定: 選択ノードがあり、Alt/Option を押しながら別ノードをホバーすると、
- * 両矩形間の上下左右ギャップを赤線と数値ラベルで表示する。
- *
- * 対象は doc.children (トップレベル) の axis-aligned bbox。
+ * Figma-like distance measurement:
+ * When a node is selected and Alt/Option is held while hovering another node
+ * (including nested children or parent frames/screens), renders red distance
+ * lines with extension guides and numeric labels.
  */
 
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useEditor } from '../../pen/state/EditorContext';
-import type { PenNode } from '../../pen/types';
-
-interface Rect {
-  x: number;
-  y: number;
-  width: number;
-  height: number;
-  id: string;
-}
-
-function nodeToRect(n: PenNode): Rect | null {
-  const w = typeof (n as { width?: unknown }).width === 'number' ? (n as { width: number }).width : 0;
-  const h = typeof (n as { height?: unknown }).height === 'number' ? (n as { height: number }).height : 0;
-  if (w <= 0 || h <= 0) return null;
-  return { id: n.id, x: n.x ?? 0, y: n.y ?? 0, width: w, height: h };
-}
+import { collectWorldRects, computeMeasurements, findHitNodeId } from './distanceMeasureMath';
 
 function screenToSvg(svg: SVGSVGElement, clientX: number, clientY: number): { x: number; y: number } {
   const ctm = svg.getScreenCTM();
-  if (!ctm) return { x: 0, y: 0 };
+  if (!ctm || ctm.a === 0 || ctm.d === 0) return { x: 0, y: 0 };
   return { x: (clientX - ctm.e) / ctm.a, y: (clientY - ctm.f) / ctm.d };
-}
-
-function pointInRect(p: { x: number; y: number }, r: Rect): boolean {
-  return p.x >= r.x && p.x <= r.x + r.width && p.y >= r.y && p.y <= r.y + r.height;
-}
-
-/** 2 つの矩形間の上下左右のギャップを算出（重なりの場合は 0 or 負を返す） */
-interface Gaps {
-  /** A の right → B の left (正: 離れている / 負: 重なり) */
-  horizontal: number;
-  /** A の bottom → B の top */
-  vertical: number;
-  /** A と B の x 軸上の重なり区間 */
-  horizontalOverlap: [number, number] | null;
-  /** A と B の y 軸上の重なり区間 */
-  verticalOverlap: [number, number] | null;
-  /** 測定線の a/b 側 ("right"|"left"|"top"|"bottom") */
-  xDir: 'right' | 'left' | 'overlap';
-  yDir: 'down' | 'up' | 'overlap';
-}
-
-function computeGaps(a: Rect, b: Rect): Gaps {
-  const aLeft = a.x,
-    aRight = a.x + a.width;
-  const aTop = a.y,
-    aBottom = a.y + a.height;
-  const bLeft = b.x,
-    bRight = b.x + b.width;
-  const bTop = b.y,
-    bBottom = b.y + b.height;
-
-  let horizontal: number;
-  let xDir: Gaps['xDir'];
-  if (aRight <= bLeft) {
-    horizontal = bLeft - aRight;
-    xDir = 'right';
-  } else if (bRight <= aLeft) {
-    horizontal = aLeft - bRight;
-    xDir = 'left';
-  } else {
-    horizontal = 0;
-    xDir = 'overlap';
-  }
-
-  let vertical: number;
-  let yDir: Gaps['yDir'];
-  if (aBottom <= bTop) {
-    vertical = bTop - aBottom;
-    yDir = 'down';
-  } else if (bBottom <= aTop) {
-    vertical = aTop - bBottom;
-    yDir = 'up';
-  } else {
-    vertical = 0;
-    yDir = 'overlap';
-  }
-
-  const hOvLow = Math.max(aLeft, bLeft);
-  const hOvHigh = Math.min(aRight, bRight);
-  const vOvLow = Math.max(aTop, bTop);
-  const vOvHigh = Math.min(aBottom, bBottom);
-
-  return {
-    horizontal,
-    vertical,
-    horizontalOverlap: hOvLow < hOvHigh ? [hOvLow, hOvHigh] : null,
-    verticalOverlap: vOvLow < vOvHigh ? [vOvLow, vOvHigh] : null,
-    xDir,
-    yDir,
-  };
 }
 
 interface Props {
@@ -109,11 +24,41 @@ export function DistanceMeasure({ svgRef, svgScale }: Props) {
   const { state } = useEditor();
   const [altDown, setAltDown] = useState(false);
   const [hoverId, setHoverId] = useState<string | null>(null);
+  const lastPointerRef = useRef<{ x: number; y: number } | null>(null);
 
-  // Alt キーの押下状態
+  const worldRects = useMemo(() => collectWorldRects(state.doc.children), [state.doc.children]);
+
+  const updateHoverAtClientPoint = useCallback(
+    (clientX: number, clientY: number) => {
+      const svg = svgRef.current;
+      if (!svg) return;
+      const pt = screenToSvg(svg, clientX, clientY);
+      setHoverId(findHitNodeId(worldRects, pt, state.selectedNodeId));
+    },
+    [svgRef, worldRects, state.selectedNodeId],
+  );
+
+  // Track pointer globally so pressing Alt without moving the mouse still measures immediately
+  useEffect(() => {
+    const handlePointerMove = (e: PointerEvent) => {
+      lastPointerRef.current = { x: e.clientX, y: e.clientY };
+      if (e.altKey && state.selectedNodeId) {
+        updateHoverAtClientPoint(e.clientX, e.clientY);
+      }
+    };
+    window.addEventListener('pointermove', handlePointerMove);
+    return () => window.removeEventListener('pointermove', handlePointerMove);
+  }, [state.selectedNodeId, updateHoverAtClientPoint]);
+
+  // Track Alt key state
   useEffect(() => {
     const down = (e: KeyboardEvent) => {
-      if (e.altKey) setAltDown(true);
+      if (e.altKey) {
+        setAltDown(true);
+        if (lastPointerRef.current && state.selectedNodeId) {
+          updateHoverAtClientPoint(lastPointerRef.current.x, lastPointerRef.current.y);
+        }
+      }
     };
     const up = (e: KeyboardEvent) => {
       if (!e.altKey) setAltDown(false);
@@ -127,125 +72,42 @@ export function DistanceMeasure({ svgRef, svgScale }: Props) {
       window.removeEventListener('keyup', up);
       window.removeEventListener('blur', blur);
     };
-  }, []);
+  }, [state.selectedNodeId, updateHoverAtClientPoint]);
 
-  // Alt を離す / 選択が外れると計測は終わる。hoverId をそこから導いておけば
-  // effect の本体で setState(null) しなくて済む (#78)。
   const measuring = altDown && !!state.selectedNodeId;
   const activeHoverId = measuring ? hoverId : null;
 
-  // ホバー位置を追跡
-  useEffect(() => {
-    if (!measuring) return;
-    const svg = svgRef.current;
-    if (!svg) return;
+  const selected = useMemo(
+    () => (state.selectedNodeId ? worldRects.find((r) => r.id === state.selectedNodeId) ?? null : null),
+    [state.selectedNodeId, worldRects],
+  );
 
-    const handleMove = (e: PointerEvent) => {
-      if (!svgRef.current) return;
-      const pt = screenToSvg(svgRef.current, e.clientX, e.clientY);
-      let found: string | null = null;
-      for (const n of state.doc.children) {
-        if (n.id === state.selectedNodeId) continue;
-        const r = nodeToRect(n);
-        if (r && pointInRect(pt, r)) {
-          found = r.id;
-          // 深さ優先ではなく一番後ろ（前面）を採用
-        }
-      }
-      setHoverId(found);
-    };
-
-    window.addEventListener('pointermove', handleMove);
-    return () => window.removeEventListener('pointermove', handleMove);
-  }, [measuring, state.selectedNodeId, state.doc.children, svgRef]);
-
-  const selected = useMemo(() => {
-    const n = state.selectedNodeId ? state.doc.children.find((c) => c.id === state.selectedNodeId) : null;
-    return n ? nodeToRect(n) : null;
-  }, [state.selectedNodeId, state.doc.children]);
-
-  const hovered = useMemo(() => {
-    const n = activeHoverId ? state.doc.children.find((c) => c.id === activeHoverId) : null;
-    return n ? nodeToRect(n) : null;
-  }, [activeHoverId, state.doc.children]);
+  const hovered = useMemo(
+    () => (activeHoverId ? worldRects.find((r) => r.id === activeHoverId) ?? null : null),
+    [activeHoverId, worldRects],
+  );
 
   if (!measuring || !selected || !hovered || selected.id === hovered.id) return null;
 
-  const gaps = computeGaps(selected, hovered);
+  const { lines, labels } = computeMeasurements(selected, hovered);
   const stroke = '#DC2626';
-  const strokeWidth = 1 / Math.max(svgScale, 0.001);
-  const labelFont = 11 / Math.max(svgScale, 0.001);
-  const labelPad = 3 / Math.max(svgScale, 0.001);
-
-  const labels: Array<{ x: number; y: number; text: string; key: string }> = [];
-  const lines: Array<{ x1: number; y1: number; x2: number; y2: number; key: string }> = [];
-
-  // --- 水平ギャップ ---
-  if (gaps.xDir !== 'overlap' && gaps.horizontal > 0.5) {
-    const yMid = gaps.verticalOverlap
-      ? (gaps.verticalOverlap[0] + gaps.verticalOverlap[1]) / 2
-      : (selected.y + selected.height / 2 + hovered.y + hovered.height / 2) / 2;
-    const xStart = gaps.xDir === 'right' ? selected.x + selected.width : hovered.x + hovered.width;
-    const xEnd = gaps.xDir === 'right' ? hovered.x : selected.x;
-    lines.push({ x1: xStart, y1: yMid, x2: xEnd, y2: yMid, key: 'h-main' });
-    // 縦方向に overlap が無い場合、hovered 側にガイド延長線を引く
-    if (!gaps.verticalOverlap) {
-      const tickY = gaps.yDir === 'down' ? hovered.y : hovered.y + hovered.height;
-      // 両ノードのエッジから測定線の高さへ破線
-      lines.push({
-        x1: selected.x + selected.width / 2,
-        y1: tickY,
-        x2: selected.x + selected.width / 2,
-        y2: yMid,
-        key: 'h-sel-ext',
-      });
-    }
-    labels.push({
-      x: (xStart + xEnd) / 2,
-      y: yMid,
-      text: `${Math.round(gaps.horizontal)}`,
-      key: 'h-label',
-    });
-  }
-
-  // --- 垂直ギャップ ---
-  if (gaps.yDir !== 'overlap' && gaps.vertical > 0.5) {
-    const xMid = gaps.horizontalOverlap
-      ? (gaps.horizontalOverlap[0] + gaps.horizontalOverlap[1]) / 2
-      : (selected.x + selected.width / 2 + hovered.x + hovered.width / 2) / 2;
-    const yStart = gaps.yDir === 'down' ? selected.y + selected.height : hovered.y + hovered.height;
-    const yEnd = gaps.yDir === 'down' ? hovered.y : selected.y;
-    lines.push({ x1: xMid, y1: yStart, x2: xMid, y2: yEnd, key: 'v-main' });
-    if (!gaps.horizontalOverlap) {
-      const tickX = gaps.xDir === 'right' ? hovered.x : hovered.x + hovered.width;
-      lines.push({
-        x1: tickX,
-        y1: selected.y + selected.height / 2,
-        x2: xMid,
-        y2: selected.y + selected.height / 2,
-        key: 'v-sel-ext',
-      });
-    }
-    labels.push({
-      x: xMid,
-      y: (yStart + yEnd) / 2,
-      text: `${Math.round(gaps.vertical)}`,
-      key: 'v-label',
-    });
-  }
+  const safeScale = Math.max(svgScale, 0.001);
+  const strokeWidth = 1 / safeScale;
+  const labelFont = 11 / safeScale;
+  const labelPad = 3 / safeScale;
 
   return (
-    <g pointerEvents="none">
-      {/* ホバー中ノードをハイライト */}
+    <g pointerEvents="none" data-testid="distance-measure">
+      {/* Highlight hovered node */}
       <rect
-        x={hovered.x - 1}
-        y={hovered.y - 1}
-        width={hovered.width + 2}
-        height={hovered.height + 2}
+        x={hovered.x - 1 / safeScale}
+        y={hovered.y - 1 / safeScale}
+        width={hovered.width + 2 / safeScale}
+        height={hovered.height + 2 / safeScale}
         fill="none"
         stroke={stroke}
         strokeWidth={strokeWidth}
-        strokeDasharray={`${4 / svgScale} ${3 / svgScale}`}
+        strokeDasharray={`${4 / safeScale} ${3 / safeScale}`}
       />
       {lines.map((l) => (
         <line
@@ -256,11 +118,11 @@ export function DistanceMeasure({ svgRef, svgScale }: Props) {
           y2={l.y2}
           stroke={stroke}
           strokeWidth={strokeWidth}
-          strokeDasharray={l.key.endsWith('-ext') ? `${3 / svgScale} ${2 / svgScale}` : undefined}
+          strokeDasharray={l.dashed ? `${3 / safeScale} ${2 / safeScale}` : undefined}
         />
       ))}
       {labels.map((l) => {
-        const textWidth = l.text.length * labelFont * 0.6 + labelPad * 2;
+        const textWidth = l.text.length * labelFont * 0.65 + labelPad * 2;
         return (
           <g key={l.key}>
             <rect
@@ -268,7 +130,7 @@ export function DistanceMeasure({ svgRef, svgScale }: Props) {
               y={l.y - labelFont * 0.7}
               width={textWidth}
               height={labelFont * 1.3}
-              rx={labelFont * 0.2}
+              rx={labelFont * 0.25}
               fill={stroke}
             />
             <text

@@ -18,7 +18,15 @@ import prettier from 'eslint-config-prettier';
 
 export default tseslint.config(
   {
-    ignores: ['dist/**', 'node_modules/**', 'workers/**/dist/**', 'tools/**/dist/**', '~/**'],
+    ignores: [
+      'dist/**',
+      'node_modules/**',
+      'workers/**/dist/**',
+      'tools/**/dist/**',
+      '~/**',
+      'src-tauri/target/**',
+      'jetbrains-plugin/**',
+    ],
   },
   js.configs.recommended,
   ...tseslint.configs.recommended,

@@ -44,3 +44,11 @@ workers/*/wrangler.toml
 
 # Vitest coverage
 coverage
+
+# Tauri Rust build artifacts
+src-tauri/target/
+
+# JetBrains / Android Studio plugin build artifacts
+jetbrains-plugin/.gradle/
+jetbrains-plugin/build/
+jetbrains-plugin/.intellijPlatform/

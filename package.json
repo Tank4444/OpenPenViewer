@@ -1,5 +1,5 @@
 {
-  "name": "pencil-viewer",
+  "name": "open-pen-viewer",
   "private": true,
   "version": "0.1.0",
   "type": "module",
@@ -9,7 +9,9 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
+    "build:desktop": "tsc -b && vite build --base=/",
     "build:action": "node tools/pen-audit/build.mjs",
+    "tauri": "tauri",
     "preview": "vite preview",
     "test": "vitest run",
     "test:watch": "vitest",
@@ -21,6 +23,8 @@
     "test:coverage": "vitest run --coverage"
   },
   "dependencies": {
+    "@tauri-apps/api": "^2.12.5",
+    "@tauri-apps/plugin-dialog": "^2.8.4",
     "lucide": "^1.39.0",
     "polygon-clipping": "^0.15.7",
     "react": "^19.2.8",
@@ -32,6 +36,7 @@
   },
   "devDependencies": {
     "@eslint/js": "^9.39.5",
+    "@tauri-apps/cli": "^2.12.6",
     "@testing-library/react": "^16.3.3",
     "@types/node": "^26.4.1",
     "@types/react": "^19.2.18",

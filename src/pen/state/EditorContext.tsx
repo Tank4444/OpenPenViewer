@@ -8,6 +8,7 @@ import { booleanOperation, type BoolOp } from '../renderer/booleanOps';
 import { flattenToPath, outlineStroke } from '../renderer/flatten';
 import { findNode, findParentChain, updateNodeInDoc } from './nodeOps';
 import { useEditorShortcuts } from './useEditorShortcuts';
+import { savePenContent } from '../../platform/hostBridge';
 
 /** 変数 1 つの形。Pencil の $var は color / number / boolean / string のいずれか。 */
 export type VariableType = 'color' | 'number' | 'boolean' | 'string';
@@ -983,13 +984,7 @@ export function EditorProvider({
   const exportPen = useCallback((fileName?: string) => {
     // rawDoc を使用（レイアウト計算前の元データ + 編集差分）
     const json = JSON.stringify(state.rawDoc, null, 2);
-    const blob = new Blob([json], { type: 'application/json' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = fileName ?? 'exported.pen';
-    a.click();
-    URL.revokeObjectURL(url);
+    void savePenContent(json, fileName);
   }, [state.rawDoc]);
 
   const canUndo = undoStack.current.length > 0;

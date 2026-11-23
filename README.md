@@ -1,10 +1,10 @@
-# Pencil Viewer
+# OpenPenViewer
 
 > **A wireframe and spec workspace for [Pencil.dev](https://www.pencil.dev/) `.pen` files that lives in your own Git repository.**
 >
-> Runs entirely in the browser. No server required. Free to host.
+> Forked from [Pregum/pencil_viewer](https://github.com/Pregum/pencil_viewer). Runs entirely in the browser. No server required. Free to host.
 
-[**Live Demo**](https://pregum.github.io/pencil_viewer/) | [Report Bug](https://github.com/Pregum/pencil_viewer/issues) | [Request Feature](https://github.com/Pregum/pencil_viewer/issues)
+[**Live Demo**](https://tank4444.github.io/OpenPenViewer/) | [Report Bug](https://github.com/Tank4444/OpenPenViewer/issues) | [Request Feature](https://github.com/Tank4444/OpenPenViewer/issues)
 
 ---
 

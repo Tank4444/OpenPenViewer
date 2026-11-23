@@ -14,6 +14,18 @@ import { useGitHub } from './github/GitHubContext';
 import { GitHubPanel } from './github/GitHubPanel';
 import { HistoryPanel } from './github/HistoryPanel';
 import { getPenFile, type GitHubFileRef } from './github/githubApi';
+import {
+  getLaunchFile,
+  isIdeHost,
+  isTauriHost,
+  onLocalFileChanged,
+  onLocalFileOpenRequest,
+  openLocalFileDialog,
+  readLocalFile,
+  setActiveLocalPath,
+  subscribeActiveLocalPath,
+  watchLocalFile,
+} from './platform/hostBridge';
 
 const LOCALES: { code: SupportedLocale; label: string }[] = [
   { code: 'en', label: 'EN' },
@@ -46,6 +58,42 @@ export function App() {
   // ロードのたびに増やすキー。これを PenViewer の key にして EditorProvider を
   // 確実に remount させる（別ファイルを開く/最新を再取得しても editor が stale にならない）。
   const [loadNonce, setLoadNonce] = useState(0);
+  const [localPath, setLocalPath] = useState<string | null>(null);
+  const isDesktop = isTauriHost();
+
+  useEffect(() => subscribeActiveLocalPath(setLocalPath), []);
+
+  const openLocalPath = useCallback(
+    async (path: string, bumpNonce = true) => {
+      try {
+        const { name, text } = await readLocalFile(path);
+        const file = new File([text], name, { type: 'application/json' });
+        await loadFile(file);
+        setCurrentFile(null);
+        setActiveLocalPath(path);
+        await watchLocalFile(path);
+        if (bumpNonce) setLoadNonce((n) => n + 1);
+      } catch (e) {
+        console.error('Failed to open local file:', e);
+      }
+    },
+    [loadFile, setCurrentFile],
+  );
+
+  const handleOpenLocalDialog = useCallback(async () => {
+    try {
+      const result = await openLocalFileDialog();
+      if (!result) return;
+      const file = new File([result.text], result.name, { type: 'application/json' });
+      await loadFile(file);
+      setCurrentFile(null);
+      setActiveLocalPath(result.path);
+      await watchLocalFile(result.path);
+      setLoadNonce((n) => n + 1);
+    } catch (e) {
+      console.error('Failed to open local dialog:', e);
+    }
+  }, [loadFile, setCurrentFile]);
 
   // GitHub から .pen を開く: テキストを File 化して loadFile に流し、参照を記録する
   const handleOpenFromGitHub = useCallback(
@@ -110,6 +158,74 @@ export function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // Tauri Desktop: load CLI launch file, watch changes, and handle Ctrl/Cmd+O
+  useEffect(() => {
+    if (!isDesktop) return;
+    let active = true;
+    let unlistenChange: (() => void) | undefined;
+    let unlistenOpenReq: (() => void) | undefined;
+
+    void (async () => {
+      const launchPath = await getLaunchFile();
+      if (active && launchPath) {
+        await openLocalPath(launchPath);
+      }
+      unlistenChange = await onLocalFileChanged((changedPath) => {
+        if (active) {
+          void openLocalPath(changedPath, true);
+        }
+      });
+      unlistenOpenReq = await onLocalFileOpenRequest((reqPath) => {
+        if (active) {
+          void openLocalPath(reqPath, true);
+        }
+      });
+    })();
+
+    const onKeyDown = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'o') {
+        e.preventDefault();
+        void handleOpenLocalDialog();
+      }
+    };
+    window.addEventListener('keydown', onKeyDown);
+
+    return () => {
+      active = false;
+      window.removeEventListener('keydown', onKeyDown);
+      unlistenChange?.();
+      unlistenOpenReq?.();
+    };
+  }, [isDesktop, openLocalPath, handleOpenLocalDialog]);
+
+  // Android Studio / IDE JCEF bridge
+  useEffect(() => {
+    let unsub: (() => void) | undefined;
+
+    const attachBridge = () => {
+      if (!isIdeHost()) return;
+      const bridge = window.__OPEN_PEN_IDE__;
+      const initial = bridge?.getInitialFile?.();
+      if (initial) {
+        const file = new File([initial.content], initial.name, { type: 'application/json' });
+        void loadFile(file);
+      }
+      unsub?.();
+      unsub = bridge?.onContentUpdate?.(({ name, content }) => {
+        const file = new File([content], name, { type: 'application/json' });
+        void loadFile(file);
+        setLoadNonce((n) => n + 1);
+      });
+    };
+
+    attachBridge();
+    window.addEventListener('openpen-ide-ready', attachBridge);
+    return () => {
+      window.removeEventListener('openpen-ide-ready', attachBridge);
+      unsub?.();
+    };
+  }, [loadFile]);
+
   const handleShare = useCallback(async () => {
     if (state.status !== 'ready' || !state.rawDoc) return;
     setShareStatus('uploading');
@@ -138,7 +254,17 @@ export function App() {
   return (
     <div className="app">
       <header className="header">
-        <span className="brand">✏️ Pencil Viewer</span>
+        <span className="brand">✏️ OpenPenViewer</span>
+        {isDesktop && (
+          <button
+            type="button"
+            className="button button--ghost button--sm"
+            onClick={() => void handleOpenLocalDialog()}
+            title="Open local .pen file (Ctrl+O)"
+          >
+            📂 Open
+          </button>
+        )}
         {state.status === 'ready' && (
           <div className="header__file">
             {currentFile ? (
@@ -156,7 +282,7 @@ export function App() {
                 <span className="header__gh-file-hist">🕑</span>
               </button>
             ) : (
-              <span>{sourceLabel}</span>
+              <span title={localPath ?? undefined}>{sourceLabel}</span>
             )}
             {isShareEnabled() && (
               <button
@@ -185,7 +311,12 @@ export function App() {
             <button
               type="button"
               className="button button--ghost header__back-btn"
-              onClick={() => { reset(); setCurrentFile(null); }}
+              onClick={() => {
+                reset();
+                setCurrentFile(null);
+                setActiveLocalPath(null);
+                void watchLocalFile(null);
+              }}
               title={t('header.back')}
               aria-label={t('header.back')}
             >
@@ -232,7 +363,7 @@ export function App() {
             ))}
           </div>
           <a
-            href="https://github.com/Pregum/pencil_viewer"
+            href="https://github.com/Tank4444/OpenPenViewer"
             target="_blank"
             rel="noopener noreferrer"
             className="header__gh-link"
@@ -245,7 +376,7 @@ export function App() {
           </a>
           <span className="header__license">MIT</span>
           {/* 共有 URL 経由の不具合報告で、どのビルドの話か切り分けるため */}
-          <span className="header__version" title="Pencil Viewer version">
+          <span className="header__version" title="OpenPenViewer version">
             v{__APP_VERSION__}
           </span>
         </div>

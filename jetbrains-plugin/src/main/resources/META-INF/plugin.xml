@@ -1,0 +1,24 @@
+<idea-plugin>
+    <id>com.tank4444.openpenviewer</id>
+    <name>OpenPenViewer</name>
+    <vendor url="https://github.com/Tank4444/OpenPenViewer">Tank4444</vendor>
+
+    <description><![CDATA[
+        Visual viewer and editor for Pencil.dev <code>.pen</code> design files inside Android Studio and IntelliJ-based IDEs.
+        Features a split JSON + live canvas editor powered by OpenPenViewer.
+    ]]></description>
+
+    <depends>com.intellij.modules.platform</depends>
+
+    <extensions defaultExtensionNs="com.intellij">
+        <fileType
+            name="Pencil Design"
+            implementationClass="com.tank4444.openpenviewer.PenFileType"
+            fieldName="INSTANCE"
+            extensions="pen"/>
+
+        <fileEditorProvider
+            implementation="com.tank4444.openpenviewer.PenFileEditorProvider"/>
+    </extensions>
+</idea-plugin>
+

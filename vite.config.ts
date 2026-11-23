@@ -7,13 +7,13 @@ import react from '@vitejs/plugin-react';
 // 不具合報告を受けたときに、どのビルドの話か切り分けられるようにする。
 const pkgVersion = (JSON.parse(readFileSync('./package.json', 'utf-8')) as { version: string }).version;
 
-// GitHub Pages はプロジェクトページ形式(https://<user>.github.io/pencil_viewer/)で
+// GitHub Pages はプロジェクトページ形式(https://<user>.github.io/OpenPenViewer/)で
 // 配信されるため、本番ビルド時はサブパス付きでアセットを吐く。
 // - `npm run dev` / テスト: ルート `/`
-// - `npm run build`: `/pencil_viewer/`(VITE_BASE で上書き可能)
+// - `npm run build`: `/OpenPenViewer/`(VITE_BASE で上書き可能)
 export default defineConfig(({ mode, command }) => {
   const env = loadEnv(mode, '.', 'VITE_');
-  const defaultBase = command === 'build' ? '/pencil_viewer/' : '/';
+  const defaultBase = command === 'build' ? '/OpenPenViewer/' : '/';
   return {
     plugins: [react()],
     base: env.VITE_BASE ?? defaultBase,
