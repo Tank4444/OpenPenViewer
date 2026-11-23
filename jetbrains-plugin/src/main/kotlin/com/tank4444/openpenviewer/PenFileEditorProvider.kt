@@ -9,6 +9,7 @@ import com.intellij.openapi.fileEditor.impl.text.TextEditorProvider
 import com.intellij.openapi.project.DumbAware
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.vfs.VirtualFile
+import com.intellij.ui.jcef.JBCefApp
 
 class PenFileEditorProvider : FileEditorProvider, DumbAware {
     override fun accept(project: Project, file: VirtualFile): Boolean {
@@ -17,7 +18,27 @@ class PenFileEditorProvider : FileEditorProvider, DumbAware {
 
     override fun createEditor(project: Project, file: VirtualFile): FileEditor {
         val textEditor = TextEditorProvider.getInstance().createEditor(project, file) as TextEditor
-        val previewEditor = PenJcefEditor(project, file)
+
+        if (!JBCefApp.isSupported()) {
+            return TextEditorWithPreview(
+                textEditor,
+                PenFallbackPreviewEditor(file, "JBCefApp.isSupported() returned false"),
+                "OpenPenViewer",
+                TextEditorWithPreview.Layout.SHOW_EDITOR
+            )
+        }
+
+        val previewEditor: FileEditor = try {
+            PenJcefEditor(project, file)
+        } catch (t: Throwable) {
+            return TextEditorWithPreview(
+                textEditor,
+                PenFallbackPreviewEditor(file, t.message),
+                "OpenPenViewer",
+                TextEditorWithPreview.Layout.SHOW_EDITOR
+            )
+        }
+
         return TextEditorWithPreview(
             textEditor,
             previewEditor,
@@ -30,4 +51,3 @@ class PenFileEditorProvider : FileEditorProvider, DumbAware {
 
     override fun getPolicy(): FileEditorPolicy = FileEditorPolicy.HIDE_DEFAULT_EDITOR
 }
-
