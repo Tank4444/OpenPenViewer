@@ -97,7 +97,13 @@ export function useDocument(): {
       const id = startRequest();
       dispatch({ type: 'LOAD_START', source });
       try {
-        const text = await readFileAsText(file);
+        const text = file.name.toLowerCase().endsWith('.fig')
+          ? await (async () => {
+              const { figToPen } = await import('../figma/figConverter');
+              const buf = await file.arrayBuffer();
+              return JSON.stringify(figToPen(buf));
+            })()
+          : await readFileAsText(file);
         await loadText(id, source, text);
       } catch (e) {
         if (!isCurrent(id)) return;

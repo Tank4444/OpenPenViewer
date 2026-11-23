@@ -1,10 +1,10 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useEditor } from '../../pen/state/EditorContext';
 
-type ExportFormat = 'pen' | 'svg' | 'png' | 'svg-selection' | 'png-selection';
+type ExportFormat = 'pen' | 'fig' | 'svg' | 'png' | 'svg-selection' | 'png-selection';
 
 export function ExportButton() {
-  const { exportPen, selectedNode } = useEditor();
+  const { exportPen, selectedNode, state } = useEditor();
   const [open, setOpen] = useState(false);
   const menuRef = useRef<HTMLDivElement>(null);
 
@@ -40,6 +40,16 @@ export function ExportButton() {
         exportPen();
         return;
       }
+      if (format === 'fig') {
+        void (async () => {
+          const { penToFig } = await import('../../pen/figma/figConverter');
+          const bytes = penToFig(state.rawDoc);
+          const copy = new Uint8Array(bytes.byteLength);
+          copy.set(bytes);
+          downloadBlob(new Blob([copy], { type: 'application/octet-stream' }), 'exported.fig');
+        })();
+        return;
+      }
 
       const svg = document.querySelector('.viewer__svg') as SVGSVGElement | null;
       if (!svg) return;
@@ -66,7 +76,7 @@ export function ExportButton() {
         }
       }
     },
-    [exportPen, selectedNode],
+    [exportPen, selectedNode, state.rawDoc],
   );
 
   const canExportSelection = !!selectedNode &&
@@ -125,6 +135,13 @@ export function ExportButton() {
             <span>
               <strong>.pen JSON</strong>
               <small>Source file (Cmd+S)</small>
+            </span>
+          </button>
+          <button className="export-menu__item" onClick={() => handleExport('fig')}>
+            <span className="export-menu__icon">🎨</span>
+            <span>
+              <strong>Figma (.fig)</strong>
+              <small>Figma local copy archive</small>
             </span>
           </button>
         </div>

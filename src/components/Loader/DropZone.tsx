@@ -15,6 +15,7 @@ export function DropZone({
     accept: {
       'application/json': ['.pen', '.json'],
       'text/plain': ['.pen'],
+      'application/octet-stream': ['.fig'],
     },
     onDrop: (accepted) => {
       if (accepted.length > 0) onFile(accepted[0]);
