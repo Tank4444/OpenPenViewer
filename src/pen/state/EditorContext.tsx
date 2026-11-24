@@ -2,7 +2,7 @@
  * エディタ状態管理: 選択ノード、Undo/Redo、ドキュメント編集を一元管理する Context。
  */
 
-import { createContext, useCallback, useContext, useMemo, useRef, useState } from 'react';
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import type { PenDocument, PenNode, FrameNode, NamedStyle, ColorStyle, TextStyle, EffectStyle, DocComment } from '../types';
 import { booleanOperation, type BoolOp } from '../renderer/booleanOps';
 import { flattenToPath, outlineStroke } from '../renderer/flatten';
@@ -126,6 +126,14 @@ interface EditorContextValue {
 
 const EditorCtx = createContext<EditorContextValue | null>(null);
 
+export interface EditorStore {
+  getState: () => EditorState;
+  subscribe: (listener: () => void) => () => void;
+}
+
+const EditorStoreCtx = createContext<EditorStore | null>(null);
+const EditorActionsCtx = createContext<Omit<EditorContextValue, 'state' | 'canUndo' | 'canRedo' | 'selectedNode'> | null>(null);
+
 export function EditorProvider({
   doc,
   rawDoc,
@@ -151,6 +159,26 @@ export function EditorProvider({
   /** 同期的に最新 state を参照したいコールバック（cloneNodesAtTop など）用 */
   const stateRef = useRef(state);
   stateRef.current = state;
+
+  const storeListenersRef = useRef(new Set<() => void>());
+  useEffect(() => {
+    for (const listener of storeListenersRef.current) {
+      listener();
+    }
+  }, [state]);
+
+  const store = useMemo<EditorStore>(
+    () => ({
+      getState: () => stateRef.current,
+      subscribe: (listener: () => void) => {
+        storeListenersRef.current.add(listener);
+        return () => {
+          storeListenersRef.current.delete(listener);
+        };
+      },
+    }),
+    [],
+  );
 
   // Undo/Redo stacks store both doc and rawDoc snapshots
   const undoStack = useRef<{ doc: PenDocument; rawDoc: PenDocument }[]>([]);
@@ -990,12 +1018,44 @@ export function EditorProvider({
   const canUndo = undoStack.current.length > 0;
   const canRedo = redoStack.current.length > 0;
 
-  const value = useMemo(
-    () => ({ state, selectNode, selectMultiple, toggleSelectNode, enterInsertMode, exitInsertMode, updateNode, updateNodeSilent, updateManySilent, pushUndoCheckpoint, deleteNode, replaceDocChildren, reorderSelected, reorderChildren, addNode, cloneNodesAtTop, createComponent, unmakeComponent, insertInstance, upsertVariable, removeVariable, renameVariable, setGridSnap, setGridSize, wrapSelectionInFrame, toggleMaskSelected, applyBooleanOp, upsertStyle, removeStyle, applyStyleToSelection, flattenSelection, outlineStrokeSelected, addComment, updateComment, removeComment, detachFromParentIfOutside, setActiveTool, beginEditing, endEditing, beginPathEditing, endPathEditing, selectedNode, exportPen, undo, redo, canUndo, canRedo }),
-    [state, selectNode, selectMultiple, toggleSelectNode, enterInsertMode, exitInsertMode, updateNode, updateNodeSilent, updateManySilent, pushUndoCheckpoint, deleteNode, replaceDocChildren, reorderSelected, reorderChildren, addNode, cloneNodesAtTop, createComponent, unmakeComponent, insertInstance, upsertVariable, removeVariable, renameVariable, setGridSnap, setGridSize, wrapSelectionInFrame, toggleMaskSelected, applyBooleanOp, upsertStyle, removeStyle, applyStyleToSelection, flattenSelection, outlineStrokeSelected, addComment, updateComment, removeComment, detachFromParentIfOutside, setActiveTool, beginEditing, endEditing, beginPathEditing, endPathEditing, selectedNode, exportPen, undo, redo, canUndo, canRedo],
+  const actions = useMemo(
+    () => ({ selectNode, selectMultiple, toggleSelectNode, enterInsertMode, exitInsertMode, updateNode, updateNodeSilent, updateManySilent, pushUndoCheckpoint, deleteNode, replaceDocChildren, reorderSelected, reorderChildren, addNode, cloneNodesAtTop, createComponent, unmakeComponent, insertInstance, upsertVariable, removeVariable, renameVariable, setGridSnap, setGridSize, wrapSelectionInFrame, toggleMaskSelected, applyBooleanOp, upsertStyle, removeStyle, applyStyleToSelection, flattenSelection, outlineStrokeSelected, addComment, updateComment, removeComment, detachFromParentIfOutside, setActiveTool, beginEditing, endEditing, beginPathEditing, endPathEditing, exportPen, undo, redo }),
+    [selectNode, selectMultiple, toggleSelectNode, enterInsertMode, exitInsertMode, updateNode, updateNodeSilent, updateManySilent, pushUndoCheckpoint, deleteNode, replaceDocChildren, reorderSelected, reorderChildren, addNode, cloneNodesAtTop, createComponent, unmakeComponent, insertInstance, upsertVariable, removeVariable, renameVariable, setGridSnap, setGridSize, wrapSelectionInFrame, toggleMaskSelected, applyBooleanOp, upsertStyle, removeStyle, applyStyleToSelection, flattenSelection, outlineStrokeSelected, addComment, updateComment, removeComment, detachFromParentIfOutside, setActiveTool, beginEditing, endEditing, beginPathEditing, endPathEditing, exportPen, undo, redo],
   );
 
-  return <EditorCtx.Provider value={value}>{children}</EditorCtx.Provider>;
+  const value = useMemo(
+    () => ({ state, ...actions, selectedNode, canUndo, canRedo }),
+    [state, actions, selectedNode, canUndo, canRedo],
+  );
+
+  return (
+    <EditorStoreCtx.Provider value={store}>
+      <EditorActionsCtx.Provider value={actions}>
+        <EditorCtx.Provider value={value}>{children}</EditorCtx.Provider>
+      </EditorActionsCtx.Provider>
+    </EditorStoreCtx.Provider>
+  );
+}
+
+export function useEditorStore(): EditorStore {
+  const store = useContext(EditorStoreCtx);
+  if (!store) throw new Error('useEditorStore must be used within EditorProvider');
+  return store;
+}
+
+export function useEditorActions() {
+  const actions = useContext(EditorActionsCtx);
+  if (!actions) throw new Error('useEditorActions must be used within EditorProvider');
+  return actions;
+}
+
+export function useEditorSelector<T>(selector: (state: EditorState) => T): T {
+  const store = useEditorStore();
+  return useSyncExternalStore(
+    store.subscribe,
+    () => selector(store.getState()),
+    () => selector(store.getState()),
+  );
 }
 
 export function useEditor(): EditorContextValue {

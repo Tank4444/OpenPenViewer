@@ -3,14 +3,14 @@
  * 値を編集するとリアルタイムで SVG に反映される。
  */
 
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { memo, useCallback, useEffect, useRef, useState } from 'react';
 import { useEditor } from '../../pen/state/EditorContext';
 import type { PenNode } from '../../pen/types';
 import { ColorPicker } from './ColorPicker';
 import { EditableField, NumberField } from './propertyFields';
 import { formatColor } from './propertyFormat';
 
-export function PropertyPanel({
+export const PropertyPanel = memo(function PropertyPanel({
   collapsed,
   onTogglePanel,
 }: {
@@ -967,4 +967,4 @@ export function PropertyPanel({
       )}
     </div>
   );
-}
+});

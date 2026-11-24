@@ -24,6 +24,7 @@ import {
   readLocalFile,
   setActiveLocalPath,
   subscribeActiveLocalPath,
+  subscribeSaveEvents,
   watchLocalFile,
 } from './platform/hostBridge';
 
@@ -59,19 +60,41 @@ export function App() {
   // 確実に remount させる（別ファイルを開く/最新を再取得しても editor が stale にならない）。
   const [loadNonce, setLoadNonce] = useState(0);
   const [localPath, setLocalPath] = useState<string | null>(null);
+  const [savedToast, setSavedToast] = useState<string | null>(null);
   const isDesktop = isTauriHost();
 
   useEffect(() => subscribeActiveLocalPath(setLocalPath), []);
 
+  useEffect(() => {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const unsub = subscribeSaveEvents((name) => {
+      setSavedToast(name);
+      if (timer) clearTimeout(timer);
+      timer = setTimeout(() => setSavedToast(null), 2000);
+    });
+    return () => {
+      unsub();
+      if (timer) clearTimeout(timer);
+    };
+  }, []);
+
   const openLocalPath = useCallback(
     async (path: string, bumpNonce = true) => {
       try {
-        const { name, text } = await readLocalFile(path);
-        const file = new File([text], name, { type: 'application/json' });
+        const result = await readLocalFile(path);
+        const isFig = result.name.toLowerCase().endsWith('.fig');
+        let file: File;
+        if (result.bytes) {
+          const copy = new Uint8Array(result.bytes.byteLength);
+          copy.set(result.bytes);
+          file = new File([copy], result.name, { type: 'application/octet-stream' });
+        } else {
+          file = new File([result.text ?? ''], result.name, { type: 'application/json' });
+        }
         await loadFile(file);
         setCurrentFile(null);
-        setActiveLocalPath(path);
-        await watchLocalFile(path);
+        setActiveLocalPath(isFig ? null : path);
+        await watchLocalFile(isFig ? null : path);
         if (bumpNonce) setLoadNonce((n) => n + 1);
       } catch (e) {
         console.error('Failed to open local file:', e);
@@ -84,11 +107,19 @@ export function App() {
     try {
       const result = await openLocalFileDialog();
       if (!result) return;
-      const file = new File([result.text], result.name, { type: 'application/json' });
+      const isFig = result.name.toLowerCase().endsWith('.fig');
+      let file: File;
+      if (result.bytes) {
+        const copy = new Uint8Array(result.bytes.byteLength);
+        copy.set(result.bytes);
+        file = new File([copy], result.name, { type: 'application/octet-stream' });
+      } else {
+        file = new File([result.text ?? ''], result.name, { type: 'application/json' });
+      }
       await loadFile(file);
       setCurrentFile(null);
-      setActiveLocalPath(result.path);
-      await watchLocalFile(result.path);
+      setActiveLocalPath(isFig ? null : result.path);
+      await watchLocalFile(isFig ? null : result.path);
       setLoadNonce((n) => n + 1);
     } catch (e) {
       console.error('Failed to open local dialog:', e);
@@ -284,6 +315,15 @@ export function App() {
             ) : (
               <span title={localPath ?? undefined}>{sourceLabel}</span>
             )}
+            {savedToast && (
+              <span
+                className="header__saved-badge"
+                title={`Saved ${savedToast}`}
+                style={{ fontSize: 12, color: '#16a34a', fontWeight: 600, marginLeft: 6 }}
+              >
+                Saved ✓
+              </span>
+            )}
             {isShareEnabled() && (
               <button
                 type="button"
@@ -411,10 +451,10 @@ export function App() {
             {state.source.kind === 'file'
               ? state.source.name
               : state.source.kind === 'url'
-              ? state.source.url
-              : state.source.kind === 'sample'
-              ? `samples/${state.source.name}`
-              : ''}
+                ? state.source.url
+                : state.source.kind === 'sample'
+                  ? `samples/${state.source.name}`
+                  : ''}
           </p>
         )}
 

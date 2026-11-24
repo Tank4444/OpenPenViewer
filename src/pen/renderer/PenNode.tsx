@@ -3,6 +3,7 @@
  * SelectableNode でラップしてクリック選択を有効化する。
  */
 
+import { memo } from 'react';
 import type { PenNode } from '../types';
 import { Rectangle } from './Rectangle';
 import { Ellipse } from './Ellipse';
@@ -19,7 +20,7 @@ import { Connection } from './Connection';
 import { Unsupported } from './Unsupported';
 import { SelectableNode } from './SelectableNode';
 import { TextEditor } from '../../components/Viewer/TextEditor';
-import { useEditor } from '../state/EditorContext';
+import { useEditorSelector } from '../state/EditorContext';
 
 function renderNode(node: PenNode, editingNodeId: string | null) {
   switch (node.type) {
@@ -73,13 +74,13 @@ function renderNode(node: PenNode, editingNodeId: string | null) {
   }
 }
 
-export function PenNodeView({ node }: { node: PenNode }) {
-  const { state } = useEditor();
+export const PenNodeView = memo(function PenNodeView({ node }: { node: PenNode }) {
+  const isEditing = useEditorSelector((s) => s.editingNodeId === node.id);
   // enabled === false のノードは描画しない（Figma の目アイコン OFF と同等）
   if ((node as { enabled?: boolean }).enabled === false) return null;
   return (
     <SelectableNode node={node}>
-      {renderNode(node, state.editingNodeId)}
+      {renderNode(node, isEditing ? node.id : null)}
     </SelectableNode>
   );
-}
+});

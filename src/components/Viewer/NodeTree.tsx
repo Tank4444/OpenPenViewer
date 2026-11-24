@@ -4,7 +4,7 @@
  * 選択変更時に自動スクロール + 祖先を自動展開。
  */
 
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useEditor } from '../../pen/state/EditorContext';
 import type { PenNode } from '../../pen/types';
 import { filterNodeTree } from '../../utils/filterNodeTree';
@@ -256,7 +256,7 @@ function NodeItem({
   );
 }
 
-export function NodeTree({ collapsed, onTogglePanel }: { collapsed?: boolean; onTogglePanel?: () => void }) {
+export const NodeTree = memo(function NodeTree({ collapsed, onTogglePanel }: { collapsed?: boolean; onTogglePanel?: () => void }) {
   const { state, selectNode, reorderChildren, updateNode } = useEditor();
 
   const toggleVisibility = useCallback(
@@ -440,4 +440,4 @@ export function NodeTree({ collapsed, onTogglePanel }: { collapsed?: boolean; on
       </div>
     </div>
   );
-}
+});

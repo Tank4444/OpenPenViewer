@@ -1706,6 +1706,9 @@ html,
   -webkit-user-select: none;
   -webkit-touch-callout: none;
 }
+.viewer__canvas--panning .viewer__svg * {
+  pointer-events: none !important;
+}
 /* アクティブツールに応じた cursor を data 属性で切り替える（ToolShortcuts が設定） */
 .viewer__canvas[data-tool='rectangle'],
 .viewer__canvas[data-tool='ellipse'],

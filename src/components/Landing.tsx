@@ -104,7 +104,7 @@ export function Landing({
       </section>
 
       <footer className="lp__footer">
-        <a href="https://github.com/Pregum/pencil_viewer" target="_blank" rel="noopener noreferrer">
+        <a href="https://github.com/Tank4444/OpenPenViewer" target="_blank" rel="noopener noreferrer">
           {t('lp.footer.source')}
         </a>
         <a href="https://www.pencil.dev/" target="_blank" rel="noopener noreferrer">

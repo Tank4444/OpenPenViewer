@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { PenDocument, PenNode } from '../../pen/types';
 import { computeViewBox } from '../../pen/renderer/viewBox';
 import { CanvasContent } from './CanvasContent';
@@ -24,22 +24,22 @@ import { HintLabels } from './HintLabels';
 import { NudgeHandler } from './NudgeHandler';
 import { MarqueeSelect } from './MarqueeSelect';
 import { EditAnimation } from './EditAnimation';
-import { UIStatesPanel } from './UIStatesPanel';
+const UIStatesPanel = lazy(() => import('./UIStatesPanel').then((m) => ({ default: m.UIStatesPanel })));
 import { CollabBar } from './CollabBar';
 import { useCollab } from '../../collab/useCollab';
 import { useBridge } from '../../collab/useBridge';
 import { CollabSync } from '../../collab/CollabSync';
 import { RemoteCursors } from '../../collab/RemoteCursors';
 import { ContextMenu } from './ContextMenu';
-import { AIReviewPanel } from './AIReviewPanel';
+const AIReviewPanel = lazy(() => import('./AIReviewPanel').then((m) => ({ default: m.AIReviewPanel })));
 import { isAIReviewEnabled } from '../../utils/aiReview';
-import { AIGeneratorPanel } from './AIGeneratorPanel';
+const AIGeneratorPanel = lazy(() => import('./AIGeneratorPanel').then((m) => ({ default: m.AIGeneratorPanel })));
 import { isAIGenerateEnabled } from '../../utils/aiGenerate';
 import { FloatingTextToolbar } from './FloatingTextToolbar';
 import { ImageDropHandler } from './ImageDropHandler';
-import { FindReplaceDialog } from './FindReplaceDialog';
+const FindReplaceDialog = lazy(() => import('./FindReplaceDialog').then((m) => ({ default: m.FindReplaceDialog })));
 import { VariablesPanel } from './VariablesPanel';
-import { DevInspectPanel } from './DevInspectPanel';
+const DevInspectPanel = lazy(() => import('./DevInspectPanel').then((m) => ({ default: m.DevInspectPanel })));
 import { StylesPanel } from './StylesPanel';
 import { SelectionColorsPanel } from './SelectionColorsPanel';
 import { GridSnapToggle } from './GridSnapToggle';
@@ -214,6 +214,22 @@ export function PenViewer({ doc, rawDoc }: { doc: PenDocument; rawDoc?: PenDocum
 
   const cursor = isSpaceHeld.current || isPanning.current ? 'grab' : 'default';
 
+  // Quantize viewBox so CanvasContent (React.memo) does not re-render on every pan/zoom pixel
+  const cullStep = Math.max(120, Math.round(currentVb.width * 0.25));
+  const qx = Math.floor(currentVb.x / cullStep) * cullStep;
+  const qy = Math.floor(currentVb.y / cullStep) * cullStep;
+  const qw = Math.ceil((currentVb.width + cullStep) / cullStep) * cullStep;
+  const qh = Math.ceil((currentVb.height + cullStep) / cullStep) * cullStep;
+  const cullViewBox = useMemo(
+    () => ({ x: qx, y: qy, width: qw, height: qh }),
+    [qx, qy, qw, qh],
+  );
+
+  const togglePages = useCallback(() => setShowPages((v) => !v), []);
+  const toggleComponents = useCallback(() => setShowComponents((v) => !v), []);
+  const toggleLayers = useCallback(() => setShowLayers((v) => !v), []);
+  const toggleProperties = useCallback(() => setShowProperties((v) => !v), []);
+
   return (
     <EditorProvider doc={doc} rawDoc={rawDoc}>
       <GitHubDirtyTracker />
@@ -368,7 +384,7 @@ export function PenViewer({ doc, rawDoc }: { doc: PenDocument; rawDoc?: PenDocum
                 viewBox={`${currentVb.x} ${currentVb.y} ${currentVb.width} ${currentVb.height}`}
                 preserveAspectRatio="xMidYMid meet"
               >
-                <CanvasContent />
+                <CanvasContent cullViewBox={cullViewBox} />
                 {collab.connected && <RemoteCursors peers={collab.peers} scale={scale} />}
                 {activeFrameId &&
                   frames.map((f) =>
@@ -437,16 +453,16 @@ export function PenViewer({ doc, rawDoc }: { doc: PenDocument; rawDoc?: PenDocum
           </div>
           <PagesPanel
             collapsed={!showPages}
-            onTogglePanel={() => setShowPages((v) => !v)}
-            onZoomToPage={(p) => zoomToFrame(p)}
+            onTogglePanel={togglePages}
+            onZoomToPage={zoomToFrame}
           />
           <ComponentsPanel
             collapsed={!showComponents}
-            onTogglePanel={() => setShowComponents((v) => !v)}
-            onZoomToNode={(r) => zoomToRect(r)}
+            onTogglePanel={toggleComponents}
+            onZoomToNode={zoomToRect}
           />
-          <NodeTree collapsed={!showLayers} onTogglePanel={() => setShowLayers((v) => !v)} />
-          <PropertyPanel collapsed={!showProperties} onTogglePanel={() => setShowProperties((v) => !v)} />
+          <NodeTree collapsed={!showLayers} onTogglePanel={toggleLayers} />
+          <PropertyPanel collapsed={!showProperties} onTogglePanel={toggleProperties} />
         </div>
 
         {showShortcuts && <ShortcutsDialog onClose={() => setShowShortcuts(false)} />}
@@ -461,16 +477,32 @@ export function PenViewer({ doc, rawDoc }: { doc: PenDocument; rawDoc?: PenDocum
           />
         )}
         {showAutoId && <AutoIdDialog onClose={() => setShowAutoId(false)} />}
-        {showUIStates && <UIStatesPanel onClose={() => setShowUIStates(false)} locale="ja" />}
-        {showAIReview && <AIReviewPanel onClose={() => setShowAIReview(false)} locale="ja" />}
+        {showUIStates && (
+          <Suspense fallback={null}>
+            <UIStatesPanel onClose={() => setShowUIStates(false)} locale="ja" />
+          </Suspense>
+        )}
+        {showAIReview && (
+          <Suspense fallback={null}>
+            <AIReviewPanel onClose={() => setShowAIReview(false)} locale="ja" />
+          </Suspense>
+        )}
         {showAIGenerate && (
-          <AIGeneratorPanel onClose={() => setShowAIGenerate(false)} onZoomToNode={(r) => zoomToRect(r)} />
+          <Suspense fallback={null}>
+            <AIGeneratorPanel onClose={() => setShowAIGenerate(false)} onZoomToNode={(r) => zoomToRect(r)} />
+          </Suspense>
         )}
         {showFindReplace && (
-          <FindReplaceDialog onClose={() => setShowFindReplace(false)} onFocusNode={(r) => zoomToRect(r)} />
+          <Suspense fallback={null}>
+            <FindReplaceDialog onClose={() => setShowFindReplace(false)} onFocusNode={(r) => zoomToRect(r)} />
+          </Suspense>
         )}
         {showVariables && <VariablesPanel onClose={() => setShowVariables(false)} />}
-        {showDevInspect && <DevInspectPanel onClose={() => setShowDevInspect(false)} />}
+        {showDevInspect && (
+          <Suspense fallback={null}>
+            <DevInspectPanel onClose={() => setShowDevInspect(false)} />
+          </Suspense>
+        )}
         {showStyles && <StylesPanel onClose={() => setShowStyles(false)} />}
         {showSelectionColors && <SelectionColorsPanel onClose={() => setShowSelectionColors(false)} />}
         {showCommandPalette && (

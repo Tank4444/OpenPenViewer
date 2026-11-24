@@ -4,9 +4,9 @@
  * 背景クリックでノード選択解除。
  */
 
-import { useMemo, useSyncExternalStore } from 'react';
+import { memo, useMemo, useState, useSyncExternalStore } from 'react';
 import { getTextMetricsVersion, subscribeTextMetrics } from '../../pen/layout/textMeasure';
-import { useEditor } from '../../pen/state/EditorContext';
+import { useEditorActions, useEditorSelector, useEditorStore } from '../../pen/state/EditorContext';
 import { buildPaintRegistry } from '../../pen/paint/registry';
 import { Defs } from '../../pen/paint/Defs';
 import { PaintRegistryProvider } from '../../pen/paint/PaintContext';
@@ -14,31 +14,52 @@ import { resolveRefs } from '../../pen/refs';
 import { substituteVariables } from '../../pen/variables';
 import { renderMaskedChildren } from '../../pen/renderer/MaskedChildren';
 import { layoutDocument } from '../../pen/layout';
+import type { ViewBox } from '../../pen/renderer/viewBox';
+import { filterVisibleTopLevelNodes } from './viewportCulling';
 
-export function CanvasContent() {
-  const { state, selectNode } = useEditor();
-  // 描画パイプライン: rawDoc → ref 展開 → 変数置換 → flex layout 再計算。
-  // rawDoc を起点にすることで、PropertyPanel から justifyContent / alignItems /
-  // gap / padding / layout など flex プロパティを変えても即時反映される。
-  // (以前は state.doc (レイアウト済み) を使っていたため、これらのプロパティを
-  //  更新してもレイアウトは初回ロード時のままになっていた)
-  // Web フォントの読み込みが終わるとテキストの実測幅が変わるので、そのたびに
-  // レイアウトをやり直す
+interface CanvasContentProps {
+  cullViewBox?: ViewBox;
+}
+
+export const CanvasContent = memo(function CanvasContent({ cullViewBox }: CanvasContentProps) {
+  const store = useEditorStore();
+  const { selectNode } = useEditorActions();
+  const rawDoc = useEditorSelector((s) => s.rawDoc);
+  const selectedNodeId = useEditorSelector((s) => s.selectedNodeId);
   const textMetricsVersion = useSyncExternalStore(
     subscribeTextMetrics,
     getTextMetricsVersion,
     getTextMetricsVersion,
   );
-  const doc = useMemo(
-    () => layoutDocument(substituteVariables(resolveRefs(state.rawDoc))),
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- textMetricsVersion は再計算のきっかけ
-    [state.rawDoc, textMetricsVersion],
+
+  // Reuse pre-computed doc from useDocument on initial mount to avoid double layout work
+  const [initialSnapshot] = useState(() => ({
+    rawDoc,
+    doc: store.getState().doc,
+    textVersion: textMetricsVersion,
+  }));
+
+  const doc = useMemo(() => {
+    if (rawDoc === initialSnapshot.rawDoc && textMetricsVersion === initialSnapshot.textVersion) {
+      return initialSnapshot.doc;
+    }
+    return layoutDocument(substituteVariables(resolveRefs(rawDoc)));
+  }, [rawDoc, textMetricsVersion, initialSnapshot]);
+
+  const visibleChildren = useMemo(
+    () => filterVisibleTopLevelNodes(doc.children, cullViewBox, selectedNodeId),
+    [doc.children, cullViewBox, selectedNodeId],
   );
-  const registry = useMemo(() => buildPaintRegistry(doc), [doc]);
+
+  // Build <Defs> only for currently visible nodes so off-screen filters/gradients stay out of DOM
+  const registry = useMemo(
+    () => buildPaintRegistry({ ...doc, children: visibleChildren }),
+    [doc, visibleChildren],
+  );
 
   return (
     <>
-      {/* Background hit area: click to deselect (シェイプ作成ツール中は ShapeCreator の addNode→selectedNodeId で上書きされるので無効化しない) */}
+      {/* Background hit area: click to deselect */}
       <rect
         x={-1e6}
         y={-1e6}
@@ -46,13 +67,13 @@ export function CanvasContent() {
         height={2e6}
         fill="transparent"
         onClick={() => {
-          if (state.activeTool === 'select') selectNode(null);
+          if (store.getState().activeTool === 'select') selectNode(null);
         }}
       />
       <Defs registry={registry} />
       <PaintRegistryProvider value={registry}>
-        {renderMaskedChildren(doc.children)}
+        {renderMaskedChildren(visibleChildren)}
       </PaintRegistryProvider>
     </>
   );
-}
+});

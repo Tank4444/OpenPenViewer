@@ -32,10 +32,28 @@ fn validate_pen_path(path: &str) -> Result<PathBuf, String> {
     }
 }
 
+fn validate_fig_path(path: &str) -> Result<PathBuf, String> {
+    let pb = PathBuf::from(path);
+    let ext = pb
+        .extension()
+        .and_then(|s| s.to_str())
+        .map(|s| s.to_ascii_lowercase());
+    match ext.as_deref() {
+        Some("fig") => Ok(pb),
+        _ => Err("Only .fig files are supported".to_string()),
+    }
+}
+
 #[tauri::command]
 fn read_pen_file(path: String) -> Result<String, String> {
     let pb = validate_pen_path(&path)?;
     std::fs::read_to_string(&pb).map_err(|e| format!("Failed to read file: {e}"))
+}
+
+#[tauri::command]
+fn read_binary_file(path: String) -> Result<Vec<u8>, String> {
+    let pb = validate_fig_path(&path)?;
+    std::fs::read(&pb).map_err(|e| format!("Failed to read binary file: {e}"))
 }
 
 #[tauri::command]
@@ -52,10 +70,18 @@ fn write_pen_file(
 }
 
 #[tauri::command]
+fn write_binary_file(path: String, data: Vec<u8>) -> Result<(), String> {
+    let pb = validate_fig_path(&path)?;
+    std::fs::write(&pb, data).map_err(|e| format!("Failed to write binary file: {e}"))
+}
+
+#[tauri::command]
 fn get_launch_file() -> Option<String> {
-    std::env::args()
-        .skip(1)
-        .find(|arg| !arg.starts_with('-') && validate_pen_path(arg).is_ok() && Path::new(arg).exists())
+    std::env::args().skip(1).find(|arg| {
+        !arg.starts_with('-')
+            && (validate_pen_path(arg).is_ok() || validate_fig_path(arg).is_ok())
+            && Path::new(arg).exists()
+    })
 }
 
 #[tauri::command]
@@ -150,7 +176,9 @@ pub fn run() {
         .manage(WatcherState::default())
         .invoke_handler(tauri::generate_handler![
             read_pen_file,
+            read_binary_file,
             write_pen_file,
+            write_binary_file,
             get_launch_file,
             watch_pen_file
         ])

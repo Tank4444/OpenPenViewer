@@ -35,6 +35,7 @@ export function isIdeHost(): boolean {
 
 let activeLocalPath: string | null = null;
 const pathListeners = new Set<(path: string | null) => void>();
+const saveListeners = new Set<(name: string) => void>();
 
 export function getActiveLocalPath(): string | null {
   return activeLocalPath;
@@ -52,6 +53,19 @@ export function subscribeActiveLocalPath(listener: (path: string | null) => void
   return () => {
     pathListeners.delete(listener);
   };
+}
+
+export function subscribeSaveEvents(listener: (name: string) => void): () => void {
+  saveListeners.add(listener);
+  return () => {
+    saveListeners.delete(listener);
+  };
+}
+
+function notifySaved(name: string): void {
+  for (const listener of saveListeners) {
+    listener(name);
+  }
 }
 
 export function extractFileName(filePath: string): string {
@@ -73,18 +87,30 @@ export async function getLaunchFile(): Promise<string | null> {
   }
 }
 
-export async function readLocalFile(path: string): Promise<{ path: string; name: string; text: string }> {
-  const text = await tauriInvoke<string>('read_pen_file', { path });
-  return { path, name: extractFileName(path), text };
+export interface LocalFileResult {
+  path: string;
+  name: string;
+  text?: string;
+  bytes?: Uint8Array;
 }
 
-export async function openLocalFileDialog(): Promise<{ path: string; name: string; text: string } | null> {
+export async function readLocalFile(path: string): Promise<LocalFileResult> {
+  const name = extractFileName(path);
+  if (path.toLowerCase().endsWith('.fig')) {
+    const raw = await tauriInvoke<number[]>('read_binary_file', { path });
+    return { path, name, bytes: new Uint8Array(raw) };
+  }
+  const text = await tauriInvoke<string>('read_pen_file', { path });
+  return { path, name, text };
+}
+
+export async function openLocalFileDialog(): Promise<LocalFileResult | null> {
   if (!isTauriHost()) return null;
   const { open } = await import('@tauri-apps/plugin-dialog');
   const selected = await open({
     multiple: false,
     filters: [
-      { name: 'Pencil Design', extensions: ['pen', 'json'] },
+      { name: 'Design Files (.pen, .fig)', extensions: ['pen', 'json', 'fig'] },
       { name: 'All Files', extensions: ['*'] },
     ],
   });
@@ -136,6 +162,7 @@ export async function savePenContent(
 
   if (host === 'ide') {
     window.__OPEN_PEN_IDE__?.saveContent?.(json);
+    notifySaved(suggestedName ?? 'document.pen');
     return { saved: true, name: suggestedName };
   }
 
@@ -156,7 +183,9 @@ export async function savePenContent(
     await tauriInvoke('write_pen_file', { path: targetPath, content: json });
     setActiveLocalPath(targetPath);
     await watchLocalFile(targetPath);
-    return { saved: true, path: targetPath, name: extractFileName(targetPath) };
+    const savedName = extractFileName(targetPath);
+    notifySaved(savedName);
+    return { saved: true, path: targetPath, name: savedName };
   }
 
   // Default Web download behavior
@@ -170,3 +199,33 @@ export async function savePenContent(
   return { saved: true, name: a.download };
 }
 
+export async function saveBinaryFile(
+  bytes: Uint8Array,
+  suggestedName: string,
+  filterName: string,
+  extensions: string[],
+): Promise<SaveResult> {
+  if (isTauriHost()) {
+    const { save } = await import('@tauri-apps/plugin-dialog');
+    const picked = await save({
+      defaultPath: suggestedName,
+      filters: [{ name: filterName, extensions }],
+    });
+    if (!picked) return { saved: false };
+    await tauriInvoke('write_binary_file', { path: picked, data: Array.from(bytes) });
+    const savedName = extractFileName(picked);
+    notifySaved(savedName);
+    return { saved: true, path: picked, name: savedName };
+  }
+
+  const copy = new Uint8Array(bytes.byteLength);
+  copy.set(bytes);
+  const blob = new Blob([copy], { type: 'application/octet-stream' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = suggestedName;
+  a.click();
+  URL.revokeObjectURL(url);
+  return { saved: true, name: suggestedName };
+}

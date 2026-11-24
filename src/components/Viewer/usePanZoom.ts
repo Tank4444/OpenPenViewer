@@ -81,6 +81,31 @@ export function usePanZoom(doc: PenDocument, baseVb: ViewBox): PanZoom {
   const isSpaceHeld = useRef(false);
   const panStart = useRef({ x: 0, y: 0 });
   const cameraStart = useRef<Camera>(camera);
+  const rafCamId = useRef(0);
+  const pendingCam = useRef<Camera | null>(null);
+
+  const scheduleCamera = useCallback((next: Camera) => {
+    if (rafCamId.current === 0) {
+      setCamera(next);
+      rafCamId.current = requestAnimationFrame(() => {
+        rafCamId.current = 0;
+        if (pendingCam.current) {
+          const cam = pendingCam.current;
+          pendingCam.current = null;
+          setCamera(cam);
+        }
+      });
+    } else {
+      pendingCam.current = next;
+    }
+  }, []);
+
+  useEffect(
+    () => () => {
+      if (rafCamId.current) cancelAnimationFrame(rafCamId.current);
+    },
+    [],
+  );
 
   // Touch: 複数指の追跡とピンチズーム状態
   const activePointers = useRef<Map<number, { x: number; y: number }>>(new Map());
@@ -279,6 +304,7 @@ export function usePanZoom(doc: PenDocument, baseVb: ViewBox): PanZoom {
       if (!wantPan) return;
 
       isPanning.current = true;
+      containerRef.current?.classList.add('viewer__canvas--panning');
       panStart.current = { x: e.clientX, y: e.clientY };
       cameraStart.current = { ...camera };
       (e.target as HTMLElement).setPointerCapture(e.pointerId);
@@ -332,7 +358,7 @@ export function usePanZoom(doc: PenDocument, baseVb: ViewBox): PanZoom {
         const newLeft = pinchSvgX - fx * newSvgWidth - panDx;
         const newTop = pinchSvgY - fy * newH - panDy;
 
-        setCamera({
+        scheduleCamera({
           cx: newLeft + newSvgWidth / 2,
           cy: newTop + newH / 2,
           svgWidth: newSvgWidth,
@@ -352,13 +378,13 @@ export function usePanZoom(doc: PenDocument, baseVb: ViewBox): PanZoom {
       const pixelsPerSvgUnit = rect.width / cameraStart.current.svgWidth;
       const dx = (e.clientX - panStart.current.x) / pixelsPerSvgUnit;
       const dy = (e.clientY - panStart.current.y) / pixelsPerSvgUnit;
-      setCamera({
+      scheduleCamera({
         ...cameraStart.current,
         cx: cameraStart.current.cx - dx,
         cy: cameraStart.current.cy - dy,
       });
     },
-    [clampSvgWidth],
+    [clampSvgWidth, scheduleCamera],
   );
 
   const handlePointerUp = useCallback(
@@ -370,6 +396,7 @@ export function usePanZoom(doc: PenDocument, baseVb: ViewBox): PanZoom {
           pinchState.current = null;
           const [remaining] = Array.from(activePointers.current.values());
           isPanning.current = true;
+          containerRef.current?.classList.add('viewer__canvas--panning');
           panStart.current = { x: remaining.x, y: remaining.y };
           cameraStart.current = { ...camera };
           return;
@@ -377,11 +404,13 @@ export function usePanZoom(doc: PenDocument, baseVb: ViewBox): PanZoom {
         // すべての指が離れた
         if (activePointers.current.size === 0) {
           isPanning.current = false;
+          containerRef.current?.classList.remove('viewer__canvas--panning');
           pinchState.current = null;
         }
         return;
       }
       isPanning.current = false;
+      containerRef.current?.classList.remove('viewer__canvas--panning');
     },
     [camera],
   );

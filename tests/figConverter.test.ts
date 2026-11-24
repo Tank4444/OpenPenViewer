@@ -1,7 +1,8 @@
 import { describe, it, expect } from 'vitest';
 import { figColorToHex, figToPen, hexToFigColor, penToFig } from '../src/pen/figma/figConverter';
 import { parseFigFile } from '../src/pen/figma/figKiwi';
-import type { PenDocument } from '../src/pen/types';
+import { resolveRefs } from '../src/pen/refs';
+import type { PenDocument, PenNode } from '../src/pen/types';
 
 describe('Figma (.fig) <-> .pen converter', () => {
   it('converts colors accurately between hex/rgba and FigColor', () => {
@@ -130,6 +131,59 @@ describe('Figma (.fig) <-> .pen converter', () => {
 
       const avatar = children[2];
       expect(avatar.type).toBe('ellipse');
+    }
+  });
+
+  it('exports resolved RefNode component instances with full children into .fig', () => {
+    const rawDoc: PenDocument = {
+      version: '1.0',
+      children: [
+        {
+          type: 'frame',
+          id: 'btn-comp',
+          reusable: true,
+          x: 0,
+          y: 0,
+          width: 200,
+          height: 44,
+          children: [
+            {
+              type: 'text',
+              id: 'btn-lbl',
+              x: 20,
+              y: 12,
+              width: 160,
+              height: 20,
+              content: 'Sign In',
+            },
+          ],
+        } as PenNode,
+        {
+          type: 'ref',
+          id: 'btn-inst',
+          ref: 'btn-comp',
+          x: 40,
+          y: 120,
+        },
+      ],
+    };
+
+    const resolved = resolveRefs(rawDoc);
+    const figBytes = penToFig(resolved, 'With Component');
+    const roundTripped = figToPen(figBytes);
+
+    expect(roundTripped.children).toHaveLength(2);
+    const instanceFrame = roundTripped.children[1];
+    expect(instanceFrame.type).toBe('frame');
+    if (instanceFrame.type === 'frame') {
+      expect(instanceFrame.x).toBe(40);
+      expect(instanceFrame.y).toBe(120);
+      expect(instanceFrame.children).toHaveLength(1);
+      const label = instanceFrame.children?.[0];
+      expect(label?.type).toBe('text');
+      if (label?.type === 'text') {
+        expect(label.content).toBe('Sign In');
+      }
     }
   });
 });

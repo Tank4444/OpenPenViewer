@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useEditor } from '../../pen/state/EditorContext';
+import { saveBinaryFile } from '../../platform/hostBridge';
 
 type ExportFormat = 'pen' | 'fig' | 'svg' | 'png' | 'svg-selection' | 'png-selection';
 
@@ -43,10 +44,9 @@ export function ExportButton() {
       if (format === 'fig') {
         void (async () => {
           const { penToFig } = await import('../../pen/figma/figConverter');
-          const bytes = penToFig(state.rawDoc);
-          const copy = new Uint8Array(bytes.byteLength);
-          copy.set(bytes);
-          downloadBlob(new Blob([copy], { type: 'application/octet-stream' }), 'exported.fig');
+          // Use resolved `state.doc` so component instances (`ref`) export with their full subtree and layout
+          const bytes = penToFig(state.doc);
+          await saveBinaryFile(bytes, 'exported.fig', 'Figma Design', ['fig']);
         })();
         return;
       }
@@ -76,7 +76,7 @@ export function ExportButton() {
         }
       }
     },
-    [exportPen, selectedNode, state.rawDoc],
+    [exportPen, selectedNode, state.doc],
   );
 
   const canExportSelection = !!selectedNode &&

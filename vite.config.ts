@@ -26,7 +26,12 @@ export default defineConfig(({ mode, command }) => {
           // vite 8 (rolldown) ではオブジェクト形式の manualChunks が廃止され、
           // 関数形式のみになった。挙動は従来の { lucide: ['lucide'] } と同じで、
           // lucide を単独チャンクに切り出す。
-          manualChunks: (id: string) => (id.includes('node_modules/lucide') ? 'lucide' : undefined),
+          manualChunks: (id: string) => {
+            if (id.includes('node_modules/lucide')) return 'lucide';
+            if (id.includes('node_modules/zod')) return 'zod';
+            if (id.includes('node_modules/yjs') || id.includes('node_modules/y-webrtc')) return 'collab';
+            return undefined;
+          },
         },
       },
     },

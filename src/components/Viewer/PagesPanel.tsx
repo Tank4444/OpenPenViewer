@@ -9,7 +9,7 @@
  * 非破壊: 特別なデータ構造は導入せず、doc.children 内の frame を "page" として扱う。
  */
 
-import { useCallback, useState } from 'react';
+import { memo, useCallback, useState } from 'react';
 import { useEditor } from '../../pen/state/EditorContext';
 import type { FrameNode, PenNode } from '../../pen/types';
 
@@ -45,7 +45,7 @@ const TRASH_ICON = (
   </svg>
 );
 
-export function PagesPanel({ collapsed, onTogglePanel, onZoomToPage }: PagesPanelProps) {
+export const PagesPanel = memo(function PagesPanel({ collapsed, onTogglePanel, onZoomToPage }: PagesPanelProps) {
   const { state, selectNode, addNode, updateNode, deleteNode, reorderChildren } = useEditor();
   const pages = state.doc.children.filter(isFramePage);
   const [renameId, setRenameId] = useState<string | null>(null);
@@ -205,4 +205,4 @@ export function PagesPanel({ collapsed, onTogglePanel, onZoomToPage }: PagesPane
       </div>
     </div>
   );
-}
+});

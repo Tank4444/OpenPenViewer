@@ -4,7 +4,7 @@
 
 import { useCallback, useRef, useState } from 'react';
 import type { PenNode } from '../types';
-import { useEditor } from '../state/EditorContext';
+import { useEditorActions, useEditorSelector, useEditorStore } from '../state/EditorContext';
 import {
   computeSnap,
   computeResizeSnap,
@@ -24,8 +24,8 @@ interface Props {
 const HANDLE_SIZE = 8;
 
 export function SelectableNode({ node, children }: Props) {
+  const store = useEditorStore();
   const {
-    state,
     selectNode,
     toggleSelectNode,
     updateNodeSilent,
@@ -35,11 +35,11 @@ export function SelectableNode({ node, children }: Props) {
     beginPathEditing,
     cloneNodesAtTop,
     detachFromParentIfOutside,
-  } = useEditor();
+  } = useEditorActions();
   const isLocked = (node as { locked?: boolean }).locked === true;
-  const isSelected = state.selectedNodeId === node.id && !isLocked;
-  const isMultiSelected = state.selectedNodeIds.has(node.id) && !isLocked;
-  const isEditing = state.editingNodeId === node.id;
+  const isSelected = useEditorSelector((s) => !isLocked && s.selectedNodeId === node.id);
+  const isMultiSelected = useEditorSelector((s) => !isLocked && s.selectedNodeIds.has(node.id));
+  const isEditing = useEditorSelector((s) => s.editingNodeId === node.id);
   const isDragging = useRef(false);
   const isResizing = useRef<string | null>(null);
   const isRotating = useRef(false);
@@ -215,10 +215,11 @@ export function SelectableNode({ node, children }: Props) {
       nodeStart.current = { x, y, w: width, h: height };
 
       // Alt+ドラッグ: 選択ノード（単一/複数）をクローン → クローン側をドラッグ対象に
+      const curState = store.getState();
       if (!handle && e.altKey) {
         const ids =
-          state.selectedNodeIds.size > 0 && state.selectedNodeIds.has(node.id)
-            ? Array.from(state.selectedNodeIds)
+          curState.selectedNodeIds.size > 0 && curState.selectedNodeIds.has(node.id)
+            ? Array.from(curState.selectedNodeIds)
             : [node.id];
         const clones = cloneNodesAtTop(ids);
         if (clones.length > 0) {
@@ -231,9 +232,9 @@ export function SelectableNode({ node, children }: Props) {
       }
 
       // マルチ選択ドラッグの準備: selectedNodeIds に含まれる全トップレベルノードの開始座標を記録
-      if (!handle && state.selectedNodeIds.size > 1 && state.selectedNodeIds.has(node.id)) {
-        multiStart.current = state.doc.children
-          .filter((n) => state.selectedNodeIds.has(n.id))
+      if (!handle && curState.selectedNodeIds.size > 1 && curState.selectedNodeIds.has(node.id)) {
+        multiStart.current = curState.doc.children
+          .filter((n) => curState.selectedNodeIds.has(n.id))
           .map((n) => ({
             id: n.id,
             x0: n.x ?? 0,
@@ -257,8 +258,7 @@ export function SelectableNode({ node, children }: Props) {
       rotation,
       pushUndoCheckpoint,
       cloneNodesAtTop,
-      state.doc.children,
-      state.selectedNodeIds,
+      store,
       node,
     ],
   );
@@ -313,7 +313,8 @@ export function SelectableNode({ node, children }: Props) {
       }
 
       // Grid Snap: dx/dy を gridSize の倍数にラウンド（dragStart からの移動量ベース）
-      const gridSize = state.gridSnap ? state.gridSize : 0;
+      const curState = store.getState();
+      const gridSize = curState.gridSnap ? curState.gridSize : 0;
       if (gridSize > 0 && isDragging.current) {
         dx = Math.round(dx / gridSize) * gridSize;
         dy = Math.round(dy / gridSize) * gridSize;
@@ -351,7 +352,7 @@ export function SelectableNode({ node, children }: Props) {
             width: maxX - minX,
             height: maxY - minY,
           };
-          const statics = state.doc.children
+          const statics = curState.doc.children
             .filter((n) => !movingIds.has(n.id))
             .map((n) => {
               const nw =
@@ -380,7 +381,7 @@ export function SelectableNode({ node, children }: Props) {
           // --- 単一選択ドラッグ ---
           const rawX = nodeStart.current.x + dx;
           const rawY = nodeStart.current.y + dy;
-          const staticsRaw = state.doc.children
+          const staticsRaw = curState.doc.children
             .filter((n) => n.id !== node.id)
             .map((n) => {
               const nw =
@@ -467,7 +468,7 @@ export function SelectableNode({ node, children }: Props) {
         const ctm = svg.getScreenCTM();
         const svgUnitsPerPixel = ctm ? 1 / ctm.a : 1;
         const threshold = 6 * svgUnitsPerPixel;
-        const staticsRaw = state.doc.children
+        const staticsRaw = curState.doc.children
           .filter((n) => n.id !== node.id)
           .map((n) => {
             const nw =
@@ -486,7 +487,7 @@ export function SelectableNode({ node, children }: Props) {
         );
 
         // Grid Snap: width/height を gridSize にラウンド
-        const gsize = state.gridSnap ? state.gridSize : 0;
+        const gsize = curState.gridSnap ? curState.gridSize : 0;
         let finalX = snapped.x;
         let finalY = snapped.y;
         let finalW = snapped.width;
@@ -547,10 +548,7 @@ export function SelectableNode({ node, children }: Props) {
       updateNodeSilent,
       updateManySilent,
       screenToSvgDelta,
-      state.doc.children,
-      // グリッドスナップ設定を落とすと、途中で切り替えても効かない (#78)
-      state.gridSnap,
-      state.gridSize,
+      store,
       width,
       height,
     ],
@@ -604,7 +602,19 @@ export function SelectableNode({ node, children }: Props) {
       style={{ cursor: isSelected ? 'move' : 'pointer' }}
     >
       <title>{tooltipText}</title>
-      {children}
+      {width > 0 && height > 0 && (
+        <rect
+          data-node-bounds={node.id}
+          x={x}
+          y={y}
+          width={width}
+          height={height}
+          fill="none"
+          stroke="none"
+          pointerEvents="none"
+        />
+      )}
+      <g data-node-id={node.id}>{children}</g>
 
       {/* Multi-selection highlight */}
       {!isSelected && isMultiSelected && width > 0 && height > 0 && (

@@ -5,7 +5,7 @@
  * 下部の PagesPanel と並ぶ左下セクション。
  */
 
-import { useMemo } from 'react';
+import { memo, useMemo } from 'react';
 import { useEditor } from '../../pen/state/EditorContext';
 import type { PenNode } from '../../pen/types';
 
@@ -41,7 +41,7 @@ interface Props {
   onZoomToNode?: (rect: { x: number; y: number; width: number; height: number; id: string }) => void;
 }
 
-export function ComponentsPanel({ collapsed, onTogglePanel, onZoomToNode }: Props) {
+export const ComponentsPanel = memo(function ComponentsPanel({ collapsed, onTogglePanel, onZoomToNode }: Props) {
   const { state, selectNode, insertInstance, unmakeComponent, createComponent } = useEditor();
   const components = useMemo(() => walk(state.rawDoc.children), [state.rawDoc]);
 
@@ -172,4 +172,4 @@ export function ComponentsPanel({ collapsed, onTogglePanel, onZoomToNode }: Prop
       </div>
     </div>
   );
-}
+});
