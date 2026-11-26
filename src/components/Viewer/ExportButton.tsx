@@ -43,10 +43,19 @@ export function ExportButton() {
       }
       if (format === 'fig') {
         void (async () => {
-          const { penToFig } = await import('../../pen/figma/figConverter');
-          // Use resolved `state.doc` so component instances (`ref`) export with their full subtree and layout
-          const bytes = penToFig(state.doc);
-          await saveBinaryFile(bytes, 'exported.fig', 'Figma Design', ['fig']);
+          try {
+            const [{ ensureLucideLoaded }, { penToFig }] = await Promise.all([
+              import('../../pen/renderer/lucideIcons'),
+              import('../../pen/figma/figConverter'),
+            ]);
+            await ensureLucideLoaded();
+            // Use resolved `state.doc` so component instances (`ref`) export with their full subtree and layout
+            const bytes = penToFig(state.doc);
+            await saveBinaryFile(bytes, 'exported.fig', 'Figma Design', ['fig']);
+          } catch (err) {
+            console.error('Figma (.fig) export failed:', err);
+            alert(`Figma (.fig) export failed: ${err instanceof Error ? err.message : String(err)}`);
+          }
         })();
         return;
       }

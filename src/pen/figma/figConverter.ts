@@ -8,12 +8,19 @@ import type {
 import {
   buildFigFile,
   parseFigFile,
+  type FigBlob,
   type FigColor,
   type FigEffect,
   type FigGuid,
   type FigNodeChange,
   type FigPaint,
 } from './figKiwi';
+import { lookupLucideIcon } from '../renderer/lucideIcons';
+import {
+  lucideToVectorNetworkBlob,
+  svgPathToVectorNetworkBlob,
+  vectorNetworkBlobToSvgPath,
+} from './vectorNetwork';
 
 function guidKey(g?: FigGuid): string {
   if (!g) return '0:0';
@@ -208,7 +215,7 @@ function penEffectsToFig(effects: unknown): FigEffect[] | undefined {
   return out.length > 0 ? out : undefined;
 }
 
-function mapStackAlign(v?: string): 'start' | 'center' | 'end' | 'space_between' | undefined {
+function mapStackAlign(v?: string): 'start' | 'center' | 'end' | 'space_between' | 'space_around' | undefined {
   switch (v) {
     case 'MIN':
       return 'start';
@@ -217,8 +224,9 @@ function mapStackAlign(v?: string): 'start' | 'center' | 'end' | 'space_between'
     case 'MAX':
       return 'end';
     case 'SPACE_BETWEEN':
-    case 'SPACE_EVENLY':
       return 'space_between';
+    case 'SPACE_EVENLY':
+      return 'space_around';
     default:
       return undefined;
   }
@@ -233,16 +241,169 @@ function mapPenAlignToFig(v?: string): string | undefined {
     case 'end':
       return 'MAX';
     case 'space_between':
-    case 'space_around':
       return 'SPACE_BETWEEN';
+    case 'space_around':
+      return 'SPACE_EVENLY';
     default:
       return undefined;
   }
 }
 
+function mapTextAlignToFig(v: unknown): string | undefined {
+  if (typeof v !== 'string') return undefined;
+  switch (v.toLowerCase()) {
+    case 'left':
+    case 'start':
+      return 'LEFT';
+    case 'center':
+      return 'CENTER';
+    case 'right':
+    case 'end':
+      return 'RIGHT';
+    case 'justify':
+    case 'justified':
+      return 'JUSTIFIED';
+    default:
+      return undefined;
+  }
+}
+
+function mapStrokeAlignToFig(v: unknown): string | undefined {
+  if (typeof v !== 'string') return undefined;
+  switch (v.toLowerCase()) {
+    case 'center':
+      return 'CENTER';
+    case 'inside':
+    case 'inner':
+      return 'INSIDE';
+    case 'outside':
+    case 'outer':
+      return 'OUTSIDE';
+    default:
+      return undefined;
+  }
+}
+
+function mapFigFontStyleToWeight(style?: string): string | undefined {
+  if (!style) return undefined;
+  const s = style.trim().toLowerCase();
+  if (s.includes('bold') && s.includes('semi')) return '600';
+  if (s.includes('bold') || s.includes('black') || s.includes('heavy')) return '700';
+  if (s.includes('medium')) return '500';
+  if (s.includes('light')) return '300';
+  return undefined;
+}
+
+function mapFontStyle(weight: unknown): string {
+  if (typeof weight === 'number') {
+    if (weight >= 700) return 'Bold';
+    if (weight >= 600) return 'Semi Bold';
+    if (weight >= 500) return 'Medium';
+    if (weight <= 300) return 'Light';
+    return 'Regular';
+  }
+  if (typeof weight === 'string') {
+    const w = weight.trim().toLowerCase();
+    if (w === 'bold' || w === '700' || w === '800' || w === '900') return 'Bold';
+    if (w === 'semibold' || w === 'semi-bold' || w === '600') return 'Semi Bold';
+    if (w === 'medium' || w === '500') return 'Medium';
+    if (w === 'light' || w === '300') return 'Light';
+  }
+  return 'Regular';
+}
+
+const MATERIAL_TO_LUCIDE: Record<string, string> = {
+  shopping_bag: 'shopping-bag',
+  local_mall: 'shopping-bag',
+  shopping_cart: 'shopping-cart',
+  search: 'search',
+  star: 'star',
+  star_rate: 'star',
+  favorite: 'heart',
+  favorite_border: 'heart',
+  add: 'plus',
+  remove: 'minus',
+  tune: 'sliders-horizontal',
+  swap_vert: 'arrow-up-down',
+  wifi: 'wifi',
+  signal_cellular_alt: 'signal',
+  signal_cellular_4_bar: 'signal',
+  signal_cellular_3_bar: 'signal',
+  signal_cellular_2_bar: 'signal',
+  signal_cellular_1_bar: 'signal',
+  network_cell: 'signal',
+  battery_full: 'battery-full',
+  battery_std: 'battery-full',
+  battery_5_bar: 'battery-full',
+  battery_6_bar: 'battery-full',
+  battery_charging_full: 'battery-charging',
+  person: 'user',
+  account_circle: 'circle-user',
+  lock: 'lock',
+  visibility: 'eye',
+  visibility_off: 'eye-off',
+  mail: 'mail',
+  email: 'mail',
+  info: 'info',
+  home: 'home',
+  settings: 'settings',
+  arrow_back: 'arrow-left',
+  arrow_forward: 'arrow-right',
+  close: 'x',
+  check: 'check',
+  delete: 'trash-2',
+  delete_outline: 'trash-2',
+  delete_forever: 'trash-2',
+  edit: 'pencil',
+  notifications: 'bell',
+  menu: 'menu',
+  more_vert: 'more-vertical',
+  more_horiz: 'more-horizontal',
+  filter_list: 'list-filter',
+  bookmark: 'bookmark',
+  share: 'share-2',
+  chevron_right: 'chevron-right',
+  chevron_left: 'chevron-left',
+  expand_more: 'chevron-down',
+  expand_less: 'chevron-up',
+  location_on: 'map-pin',
+  phone: 'phone',
+  credit_card: 'credit-card',
+  local_shipping: 'truck',
+  verified: 'badge-check',
+  verified_user: 'shield-check',
+  storefront: 'store',
+  alternate_email: 'at-sign',
+  replay: 'rotate-ccw',
+  logout: 'log-out',
+  login: 'log-in',
+};
+
+function safeNum(v: unknown, fallback: number): number {
+  return typeof v === 'number' && Number.isFinite(v) ? v : fallback;
+}
+
+function safeTextContent(v: unknown): string {
+  if (typeof v === 'string') return v;
+  if (typeof v === 'number' || typeof v === 'boolean') return String(v);
+  if (Array.isArray(v)) {
+    return v
+      .map((part) => {
+        if (typeof part === 'string') return part;
+        if (part && typeof part === 'object' && 'content' in part) {
+          return String((part as { content?: unknown }).content ?? '');
+        }
+        return '';
+      })
+      .join('');
+  }
+  return '';
+}
+
 function convertFigNodeToPen(
   nc: FigNodeChange,
   childrenMap: Map<string, FigNodeChange[]>,
+  blobs: FigBlob[] = [],
 ): PenNode | null {
   const id = guidKey(nc.guid);
   const x = nc.transform?.m02 ?? 0;
@@ -272,10 +433,11 @@ function convertFigNodeToPen(
     y,
     ...(nc.visible === false ? { enabled: false } : {}),
     ...(nc.opacity !== undefined && nc.opacity < 1 ? { opacity: nc.opacity } : {}),
+    ...(nc.stackPositioning === 'ABSOLUTE' ? { layoutPosition: 'absolute' as const } : {}),
   };
 
   const childNodes = (childrenMap.get(id) ?? [])
-    .map((child) => convertFigNodeToPen(child, childrenMap))
+    .map((child) => convertFigNodeToPen(child, childrenMap, blobs))
     .filter((n): n is PenNode => n !== null);
 
   switch (nc.type) {
@@ -288,10 +450,17 @@ function convertFigNodeToPen(
           ? 'horizontal'
           : nc.stackMode === 'VERTICAL'
             ? 'vertical'
-            : undefined;
-      const padH = nc.stackHorizontalPadding ?? nc.stackPadding ?? 0;
-      const padV = nc.stackVerticalPadding ?? nc.stackPadding ?? 0;
-      const padding = padH || padV ? [padV, padH] : undefined;
+            : 'none';
+      const padLeft = nc.stackHorizontalPadding ?? nc.stackPadding ?? 0;
+      const padTop = nc.stackVerticalPadding ?? nc.stackPadding ?? 0;
+      const padRight = nc.stackPaddingRight ?? padLeft;
+      const padBottom = nc.stackPaddingBottom ?? padTop;
+      const padding =
+        padTop || padRight || padBottom || padLeft
+          ? padTop !== padBottom || padLeft !== padRight
+            ? [padTop, padRight, padBottom, padLeft]
+            : [padTop, padLeft]
+          : undefined;
       return {
         ...base,
         type: 'frame',
@@ -302,7 +471,7 @@ function convertFigNodeToPen(
         ...(effects ? { effect: effects } : {}),
         ...(nc.cornerRadius ? { cornerRadius: nc.cornerRadius } : {}),
         ...(nc.clipsContent !== undefined ? { clip: nc.clipsContent } : {}),
-        ...(layout ? { layout } : {}),
+        layout,
         ...(nc.stackSpacing ? { gap: nc.stackSpacing } : {}),
         ...(padding ? { padding } : {}),
         ...(mapStackAlign(nc.stackPrimaryAlignItems)
@@ -360,6 +529,7 @@ function convertFigNodeToPen(
 
     case 'TEXT': {
       const textFill = fills?.[0];
+      const weight = mapFigFontStyleToWeight(nc.fontName?.style);
       return {
         ...base,
         type: 'text',
@@ -368,6 +538,7 @@ function convertFigNodeToPen(
         content: nc.textData?.characters ?? nc.name ?? '',
         fontSize: nc.fontSize ?? 16,
         ...(nc.fontName?.family ? { fontFamily: nc.fontName.family } : {}),
+        ...(weight ? { fontWeight: weight } : {}),
         ...(nc.textAlignHorizontal
           ? { textAlign: nc.textAlignHorizontal.toLowerCase() }
           : {}),
@@ -376,9 +547,36 @@ function convertFigNodeToPen(
       } as PenNode;
     }
 
+    case 'VECTOR': {
+      const blobIdx = nc.vectorData?.vectorNetworkBlob;
+      const blob = typeof blobIdx === 'number' ? blobs[blobIdx] : undefined;
+      const geometry = blob?.bytes ? vectorNetworkBlobToSvgPath(blob.bytes) : '';
+      if (geometry) {
+        return {
+          ...base,
+          type: 'path',
+          width,
+          height,
+          geometry,
+          ...(fills ? { fill: fills.length === 1 ? fills[0] : fills } : {}),
+          ...(stroke ? { stroke } : {}),
+          ...(effects ? { effect: effects } : {}),
+        } as PenNode;
+      }
+      return {
+        ...base,
+        type: 'rectangle',
+        width,
+        height,
+        ...(nc.cornerRadius ? { cornerRadius: nc.cornerRadius } : {}),
+        ...(fills ? { fill: fills.length === 1 ? fills[0] : fills } : {}),
+        ...(stroke ? { stroke } : {}),
+        ...(effects ? { effect: effects } : {}),
+      } as PenNode;
+    }
+
     case 'RECTANGLE':
     case 'ROUNDED_RECTANGLE':
-    case 'VECTOR':
     default:
       return {
         ...base,
@@ -395,6 +593,7 @@ function convertFigNodeToPen(
 
 export function figToPen(input: ArrayBuffer | Uint8Array): PenDocument {
   const parsed = parseFigFile(input);
+  const blobs = Array.isArray(parsed.message.blobs) ? (parsed.message.blobs as FigBlob[]) : [];
   const nodeChanges = (parsed.message.nodeChanges ?? []).filter(
     (nc) => nc.phase !== 'REMOVED',
   );
@@ -415,9 +614,11 @@ export function figToPen(input: ArrayBuffer | Uint8Array): PenDocument {
   }
 
   for (const list of childrenMap.values()) {
-    list.sort((a, b) =>
-      (a.parentIndex?.position ?? '').localeCompare(b.parentIndex?.position ?? ''),
-    );
+    list.sort((a, b) => {
+      const pa = a.parentIndex?.position ?? '';
+      const pb = b.parentIndex?.position ?? '';
+      return pa < pb ? -1 : pa > pb ? 1 : 0;
+    });
   }
 
   const canvases = nodeChanges.filter((nc) => nc.type === 'CANVAS');
@@ -427,7 +628,7 @@ export function figToPen(input: ArrayBuffer | Uint8Array): PenDocument {
     const firstCanvas = canvases[0];
     const topNodes = childrenMap.get(guidKey(firstCanvas.guid)) ?? [];
     for (const nc of topNodes) {
-      const converted = convertFigNodeToPen(nc, childrenMap);
+      const converted = convertFigNodeToPen(nc, childrenMap, blobs);
       if (converted) rootNodes.push(converted);
     }
   } else {
@@ -436,7 +637,7 @@ export function figToPen(input: ArrayBuffer | Uint8Array): PenDocument {
       if (nc.type === 'DOCUMENT') continue;
       const pKey = nc.parentIndex?.guid ? guidKey(nc.parentIndex.guid) : '';
       if (!pKey || !byId.has(pKey)) {
-        const converted = convertFigNodeToPen(nc, childrenMap);
+        const converted = convertFigNodeToPen(nc, childrenMap, blobs);
         if (converted) rootNodes.push(converted);
       }
     }
@@ -449,10 +650,7 @@ export function figToPen(input: ArrayBuffer | Uint8Array): PenDocument {
 }
 
 function positionForIndex(index: number): string {
-  // Printable ASCII lexicographical positions (!, ", #, $, ...)
-  const code = 33 + (index % 90);
-  const prefix = index >= 90 ? 'z'.repeat(Math.floor(index / 90)) : '';
-  return prefix + String.fromCharCode(code);
+  return String(index).padStart(5, '0');
 }
 
 export function penToFig(doc: PenDocument, title = 'OpenPenViewer'): Uint8Array {
@@ -461,6 +659,11 @@ export function penToFig(doc: PenDocument, title = 'OpenPenViewer'): Uint8Array 
 
   const docGuid: FigGuid = { sessionID: 0, localID: 0 };
   const canvasGuid: FigGuid = { sessionID: 0, localID: 1 };
+  const blobs: FigBlob[] = [];
+  const pushBlob = (bytes: Uint8Array): number => {
+    blobs.push({ bytes });
+    return blobs.length - 1;
+  };
 
   const changes: FigNodeChange[] = [
     {
@@ -485,10 +688,10 @@ export function penToFig(doc: PenDocument, title = 'OpenPenViewer'): Uint8Array 
   const visit = (nodes: PenNode[], parentGuid: FigGuid) => {
     nodes.forEach((node, idx) => {
       const guid = allocGuid();
-      const x = typeof node.x === 'number' ? node.x : 0;
-      const y = typeof node.y === 'number' ? node.y : 0;
-      const w = typeof (node as { width?: unknown }).width === 'number' ? (node as { width: number }).width : 100;
-      const h = typeof (node as { height?: unknown }).height === 'number' ? (node as { height: number }).height : 100;
+      const x = safeNum(node.x, 0);
+      const y = safeNum(node.y, 0);
+      const w = safeNum((node as { width?: unknown }).width, 100);
+      const h = safeNum((node as { height?: unknown }).height, 100);
 
       const fillRaw = (node as { fill?: unknown }).fill;
       const strokeRaw = (node as { stroke?: Stroke }).stroke;
@@ -496,7 +699,20 @@ export function penToFig(doc: PenDocument, title = 'OpenPenViewer'): Uint8Array 
 
       const fillPaints = penFillsToFigPaints(fillRaw);
       const strokePaints = strokeRaw?.fill ? penFillsToFigPaints(strokeRaw.fill) : undefined;
-      const strokeWeight = typeof strokeRaw?.thickness === 'number' ? strokeRaw.thickness : strokeRaw ? 1 : undefined;
+      const strokeWeight = (() => {
+        if (!strokeRaw) return undefined;
+        if (typeof strokeRaw.thickness === 'number' && Number.isFinite(strokeRaw.thickness)) {
+          return strokeRaw.thickness;
+        }
+        if (strokeRaw.thickness && typeof strokeRaw.thickness === 'object') {
+          const vals = Object.values(strokeRaw.thickness).filter(
+            (v): v is number => typeof v === 'number' && Number.isFinite(v) && v > 0,
+          );
+          if (vals.length > 0) return Math.max(...vals);
+        }
+        return 1;
+      })();
+      const strokeAlignFig = mapStrokeAlignToFig(strokeRaw?.align);
       const effects = penEffectsToFig(effectRaw);
 
       let figType = 'RECTANGLE';
@@ -513,36 +729,54 @@ export function penToFig(doc: PenDocument, title = 'OpenPenViewer'): Uint8Array 
         phase: 'CREATED',
         parentIndex: { guid: parentGuid, position: positionForIndex(idx) },
         type: figType,
-        name: node.name ?? node.id,
+        name: String(node.name ?? node.id ?? 'Layer'),
         visible: (node as { enabled?: boolean }).enabled !== false,
-        opacity: (node as { opacity?: number }).opacity ?? 1,
+        opacity: clamp01(safeNum((node as { opacity?: unknown }).opacity, 1)),
         size: { x: w, y: h },
         transform: { m00: 1, m01: 0, m02: x, m10: 0, m11: 1, m12: y },
         ...(fillPaints ? { fillPaints } : {}),
         ...(strokePaints ? { strokePaints } : {}),
         ...(strokeWeight !== undefined ? { strokeWeight } : {}),
-        ...(strokeRaw?.align ? { strokeAlign: strokeRaw.align.toUpperCase() } : {}),
+        ...(strokeAlignFig ? { strokeAlign: strokeAlignFig } : {}),
         ...(effects ? { effects } : {}),
+        ...((node as { layoutPosition?: string }).layoutPosition === 'absolute'
+          ? { stackPositioning: 'ABSOLUTE' }
+          : {}),
       };
 
       const cornerRadius = (node as { cornerRadius?: number | number[] }).cornerRadius;
-      if (typeof cornerRadius === 'number') {
+      if (typeof cornerRadius === 'number' && Number.isFinite(cornerRadius)) {
         nc.cornerRadius = cornerRadius;
-      } else if (Array.isArray(cornerRadius) && typeof cornerRadius[0] === 'number') {
+      } else if (Array.isArray(cornerRadius) && typeof cornerRadius[0] === 'number' && Number.isFinite(cornerRadius[0])) {
         nc.cornerRadius = cornerRadius[0];
       }
 
       if (node.type === 'frame') {
         nc.clipsContent = node.clip !== false;
-        if (node.layout === 'horizontal') nc.stackMode = 'HORIZONTAL';
-        else if (node.layout === 'vertical') nc.stackMode = 'VERTICAL';
-        if (typeof node.gap === 'number') nc.stackSpacing = node.gap;
-        if (typeof node.padding === 'number') {
+        const hasChildren = Array.isArray(node.children) && node.children.length > 0;
+        if (node.layout === 'none') {
+          nc.stackMode = 'NONE';
+        } else if (node.layout === 'vertical') {
+          nc.stackMode = 'VERTICAL';
+        } else if (node.layout === 'horizontal' || hasChildren) {
+          // Pencil frames default to horizontal flex when layout is omitted
+          nc.stackMode = 'HORIZONTAL';
+        }
+        if (typeof node.gap === 'number' && Number.isFinite(node.gap)) nc.stackSpacing = node.gap;
+        if (typeof node.padding === 'number' && Number.isFinite(node.padding)) {
           nc.stackHorizontalPadding = node.padding;
           nc.stackVerticalPadding = node.padding;
+          nc.stackPaddingRight = node.padding;
+          nc.stackPaddingBottom = node.padding;
         } else if (Array.isArray(node.padding)) {
-          nc.stackVerticalPadding = node.padding[0] ?? 0;
-          nc.stackHorizontalPadding = node.padding[1] ?? node.padding[0] ?? 0;
+          const top = safeNum(node.padding[0], 0);
+          const right = safeNum(node.padding[1] ?? top, 0);
+          const bottom = safeNum(node.padding[2] ?? top, 0);
+          const left = safeNum(node.padding[3] ?? right, 0);
+          nc.stackVerticalPadding = top;
+          nc.stackHorizontalPadding = left;
+          nc.stackPaddingRight = right;
+          nc.stackPaddingBottom = bottom;
         }
         const primary = mapPenAlignToFig(node.justifyContent);
         const counter = mapPenAlignToFig(node.alignItems);
@@ -551,20 +785,91 @@ export function penToFig(doc: PenDocument, title = 'OpenPenViewer'): Uint8Array 
       }
 
       if (node.type === 'text') {
-        nc.textData = { characters: node.content ?? '' };
-        nc.fontSize = typeof node.fontSize === 'number' ? node.fontSize : 16;
+        nc.textData = { characters: safeTextContent(node.content) };
+        nc.fontSize = safeNum(node.fontSize, 16);
         nc.fontName = {
-          family: node.fontFamily ?? 'Inter',
-          style: 'Regular',
+          family: typeof node.fontFamily === 'string' && node.fontFamily ? node.fontFamily : 'Inter',
+          style: mapFontStyle(node.fontWeight),
           postscript: '',
         };
-        if (node.textAlign) {
-          nc.textAlignHorizontal = node.textAlign.toUpperCase();
+        const textAlignFig = mapTextAlignToFig(node.textAlign);
+        if (textAlignFig) {
+          nc.textAlignHorizontal = textAlignFig;
         }
       }
 
-      if (node.type === 'polygon' && typeof node.polygonCount === 'number') {
-        nc.count = node.polygonCount;
+      if (node.type === 'polygon' && typeof node.polygonCount === 'number' && Number.isFinite(node.polygonCount)) {
+        nc.count = Math.max(3, Math.round(node.polygonCount));
+      }
+
+      if (node.type === 'path' && typeof node.geometry === 'string' && node.geometry.trim()) {
+        const blob = svgPathToVectorNetworkBlob(node.geometry, w, h);
+        if (blob) {
+          nc.vectorData = {
+            vectorNetworkBlob: pushBlob(blob),
+            normalizedSize: { x: w, y: h },
+          };
+        }
+      }
+
+      if (node.type === 'icon_font') {
+        const family = typeof node.iconFontFamily === 'string' ? node.iconFontFamily : 'lucide';
+        const iconName = typeof node.iconFontName === 'string' ? node.iconFontName : '';
+        const normalizedKey = iconName.trim().toLowerCase();
+        const mappedLucideName =
+          MATERIAL_TO_LUCIDE[normalizedKey] ??
+          (family.toLowerCase().includes('material') ? normalizedKey.replace(/_/g, '-') : iconName);
+        const lucideData =
+          (iconName ? lookupLucideIcon(iconName) : null) ??
+          (mappedLucideName ? lookupLucideIcon(mappedLucideName) : null);
+        const vecRes = lucideData ? lucideToVectorNetworkBlob(lucideData, w, h) : null;
+
+        if (vecRes) {
+          // Wrap the vector inside a transparent w x h FRAME so Auto Layout slots stay exact
+          nc.type = 'FRAME';
+          nc.clipsContent = false;
+          nc.stackMode = 'NONE';
+          delete nc.fillPaints;
+          delete nc.strokePaints;
+          delete nc.strokeWeight;
+
+          const vecGuid = allocGuid();
+          const vecNode: FigNodeChange = {
+            guid: vecGuid,
+            phase: 'CREATED',
+            parentIndex: { guid, position: '00000' },
+            type: 'VECTOR',
+            name: `${String(node.name ?? iconName ?? 'Icon')} Vector`,
+            visible: true,
+            opacity: 1,
+            size: { x: vecRes.width, y: vecRes.height },
+            transform: {
+              m00: 1,
+              m01: 0,
+              m02: vecRes.offsetX,
+              m10: 0,
+              m11: 1,
+              m12: vecRes.offsetY,
+            },
+            vectorData: {
+              vectorNetworkBlob: pushBlob(vecRes.blob),
+              normalizedSize: { x: vecRes.width, y: vecRes.height },
+            },
+            ...(fillPaints ? { strokePaints: fillPaints } : strokePaints ? { strokePaints } : {}),
+            strokeWeight: Math.max(1, Number(((2 * Math.min(w, h)) / 24).toFixed(2))),
+            strokeCap: 'ROUND',
+            strokeJoin: 'ROUND',
+          };
+          changes.push(nc);
+          changes.push(vecNode);
+          return;
+        } else if (family.toLowerCase().includes('material')) {
+          nc.type = 'TEXT';
+          nc.textData = { characters: iconName };
+          nc.fontSize = Math.max(12, Math.min(w, h));
+          nc.fontName = { family, style: 'Regular', postscript: '' };
+          nc.textAlignHorizontal = 'CENTER';
+        }
       }
 
       changes.push(nc);
@@ -577,6 +882,6 @@ export function penToFig(doc: PenDocument, title = 'OpenPenViewer'): Uint8Array 
   };
 
   visit(doc.children, canvasGuid);
-  return buildFigFile(changes, title);
+  return buildFigFile(changes, title, blobs);
 }
 

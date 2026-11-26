@@ -78,6 +78,15 @@ export interface FigNumberWithUnit {
   units?: string;
 }
 
+export interface FigVectorData {
+  vectorNetworkBlob?: number;
+  normalizedSize?: FigVector;
+}
+
+export interface FigBlob {
+  bytes: Uint8Array;
+}
+
 export interface FigNodeChange {
   guid: FigGuid;
   phase?: string;
@@ -107,6 +116,8 @@ export interface FigNodeChange {
   stackPadding?: number;
   stackHorizontalPadding?: number;
   stackVerticalPadding?: number;
+  stackPaddingRight?: number;
+  stackPaddingBottom?: number;
   stackPrimaryAlignItems?: string;
   stackCounterAlignItems?: string;
   fontSize?: number;
@@ -116,6 +127,8 @@ export interface FigNodeChange {
   lineHeight?: FigNumberWithUnit;
   letterSpacing?: FigNumberWithUnit;
   count?: number;
+  vectorData?: FigVectorData;
+  stackPositioning?: string;
   [key: string]: unknown;
 }
 
@@ -203,6 +216,23 @@ export const FIGMA_KIWI_SCHEMA: Schema = parseSchema(`
     OUTSIDE = 2;
   }
 
+  enum StrokeCap {
+    NONE = 0;
+    ROUND = 1;
+    SQUARE = 2;
+  }
+
+  enum StrokeJoin {
+    MITER = 0;
+    BEVEL = 1;
+    ROUND = 2;
+  }
+
+  enum StackPositioning {
+    AUTO = 0;
+    ABSOLUTE = 1;
+  }
+
   enum TextAlignHorizontal {
     LEFT = 0;
     CENTER = 1;
@@ -274,6 +304,15 @@ export const FIGMA_KIWI_SCHEMA: Schema = parseSchema(`
     string characters = 1;
   }
 
+  struct VectorData {
+    uint vectorNetworkBlob;
+    Vector normalizedSize;
+  }
+
+  message Blob {
+    byte[] bytes = 1;
+  }
+
   message NodeChange {
     GUID guid = 1;
     NodePhase phase = 2;
@@ -302,6 +341,12 @@ export const FIGMA_KIWI_SCHEMA: Schema = parseSchema(`
     TextData textData = 25;
     TextAlignHorizontal textAlignHorizontal = 26;
     uint count = 27;
+    VectorData vectorData = 28;
+    StrokeCap strokeCap = 29;
+    StrokeJoin strokeJoin = 30;
+    StackPositioning stackPositioning = 31;
+    float stackPaddingRight = 32;
+    float stackPaddingBottom = 33;
   }
 
   message Message {
@@ -309,6 +354,7 @@ export const FIGMA_KIWI_SCHEMA: Schema = parseSchema(`
     uint sessionID = 2;
     uint ackID = 3;
     NodeChange[] nodeChanges = 4;
+    Blob[] blobs = 5;
   }
 `);
 
@@ -392,7 +438,11 @@ export function parseFigFile(input: ArrayBuffer | Uint8Array): FigKiwiDocument {
   return { version, schema, message, images };
 }
 
-export function buildFigFile(nodeChanges: FigNodeChange[], title = 'OpenPenViewer'): Uint8Array {
+export function buildFigFile(
+  nodeChanges: FigNodeChange[],
+  title = 'OpenPenViewer',
+  blobs: FigBlob[] = [],
+): Uint8Array {
   const schemaBytes = encodeBinarySchema(FIGMA_KIWI_SCHEMA);
   const compiled = compileSchema(FIGMA_KIWI_SCHEMA) as {
     encodeMessage: (msg: Record<string, unknown>) => Uint8Array;
@@ -402,6 +452,7 @@ export function buildFigFile(nodeChanges: FigNodeChange[], title = 'OpenPenViewe
     sessionID: 1,
     ackID: 0,
     nodeChanges,
+    ...(blobs.length > 0 ? { blobs } : {}),
   });
 
   const compressedSchema = deflateSync(schemaBytes);

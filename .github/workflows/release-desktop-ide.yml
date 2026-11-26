@@ -48,6 +48,18 @@ jobs:
         with:
           includeUpdaterJson: false
 
+      - name: Package Windows portable build
+        if: matrix.platform == 'windows-latest'
+        shell: pwsh
+        run: |
+          $version = (Get-Content src-tauri/tauri.conf.json | ConvertFrom-Json).version
+          $portableDir = "src-tauri/target/release/bundle/portable"
+          $stagingDir = "$portableDir/OpenPenViewer-$version-windows-x64-portable"
+          New-Item -ItemType Directory -Force -Path $stagingDir | Out-Null
+          Copy-Item "src-tauri/target/release/open-pen-viewer.exe" "$stagingDir/OpenPenViewer.exe"
+          Compress-Archive -Path "$stagingDir/*" -DestinationPath "$portableDir/OpenPenViewer_${version}_x64-portable.zip" -Force
+          Copy-Item "src-tauri/target/release/open-pen-viewer.exe" "$portableDir/OpenPenViewer_${version}_x64-portable.exe"
+
       - name: Upload desktop artifacts
         uses: actions/upload-artifact@v4
         with:
@@ -55,6 +67,8 @@ jobs:
           path: |
             src-tauri/target/release/bundle/msi/*.msi
             src-tauri/target/release/bundle/nsis/*.exe
+            src-tauri/target/release/bundle/portable/*.zip
+            src-tauri/target/release/bundle/portable/*.exe
             src-tauri/target/release/bundle/dmg/*.dmg
             src-tauri/target/release/bundle/deb/*.deb
             src-tauri/target/release/bundle/appimage/*.AppImage
