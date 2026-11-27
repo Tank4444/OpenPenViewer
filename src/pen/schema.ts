@@ -52,7 +52,7 @@ const zImageFill = z
   .object({
     type: z.literal('image'),
     url: z.string(),
-    mode: z.enum(['stretch', 'fill', 'fit']).optional(),
+    mode: z.enum(['stretch', 'fill', 'fit', 'tile', 'crop']).optional(),
     opacity: z.number().optional(),
     enabled: z.boolean().optional(),
   })

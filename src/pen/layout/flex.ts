@@ -63,8 +63,10 @@ function layoutContainer(node: FrameNode | GroupNode, ctx: LayoutContext): PenNo
   const { layout, gap, padding, justify, align } = resolveFlexProps(node);
 
   const rawChildren = node.children ?? [];
+  const preservePositions =
+    node.type === 'frame' && node.layoutPreservePositions === true;
 
-  if (layout === 'none' || rawChildren.length === 0) {
+  if (layout === 'none' || preservePositions || rawChildren.length === 0) {
     // 子の x/y/width/height はそのまま尊重。ただし再帰的に layout する
     const childCtx: LayoutContext = {
       availableWidth: width,

@@ -14,7 +14,8 @@ import {
   type EqualSpaceGuide,
 } from '../state/snapEngine';
 import { applyConstraints, type ChildGeom } from '../layout/constraints';
-import type { NodeConstraints } from '../types';
+import type { BlendMode, NodeConstraints } from '../types';
+import { blendModeToCss } from './paint';
 
 interface Props {
   node: PenNode;
@@ -22,6 +23,29 @@ interface Props {
 }
 
 const HANDLE_SIZE = 8;
+
+function buildNodeTransform(
+  x: number,
+  y: number,
+  width: number,
+  height: number,
+  rotation: number,
+  flipX: boolean,
+  flipY: boolean,
+): string | undefined {
+  if ((width <= 0 && height <= 0) || (rotation === 0 && !flipX && !flipY)) {
+    return undefined;
+  }
+  const cx = x + width / 2;
+  const cy = y + height / 2;
+  if (!flipX && !flipY) {
+    return `rotate(${-rotation} ${cx} ${cy})`;
+  }
+  const sx = flipX ? -1 : 1;
+  const sy = flipY ? -1 : 1;
+  const rotPart = rotation !== 0 ? ` rotate(${-rotation})` : '';
+  return `translate(${cx} ${cy})${rotPart} scale(${sx} ${sy}) translate(${-cx} ${-cy})`;
+}
 
 export function SelectableNode({ node, children }: Props) {
   const isLocked = (node as { locked?: boolean }).locked === true;
@@ -50,10 +74,10 @@ function UnselectedNodeWrapper({ node, children }: Props) {
   const height =
     typeof (node as { height?: unknown }).height === 'number' ? (node as { height: number }).height : 0;
   const rotation = (node as { rotation?: number }).rotation ?? 0;
-  const groupTransform =
-    rotation !== 0 && width > 0 && height > 0
-      ? `rotate(${-rotation} ${x + width / 2} ${y + height / 2})`
-      : undefined;
+  const flipX = (node as { flipX?: boolean }).flipX === true;
+  const flipY = (node as { flipY?: boolean }).flipY === true;
+  const cssBlend = blendModeToCss((node as { blendMode?: BlendMode }).blendMode);
+  const groupTransform = buildNodeTransform(x, y, width, height, rotation, flipX, flipY);
 
   const tooltipName = node.name ?? node.id;
   const tooltipText =
@@ -95,7 +119,10 @@ function UnselectedNodeWrapper({ node, children }: Props) {
           }),
         );
       }}
-      style={{ cursor: isLocked ? 'default' : 'pointer' }}
+      style={{
+        cursor: isLocked ? 'default' : 'pointer',
+        ...(cssBlend ? { mixBlendMode: cssBlend as React.CSSProperties['mixBlendMode'] } : {}),
+      }}
     >
       <title>{tooltipText}</title>
       {width > 0 && height > 0 && (
@@ -162,10 +189,10 @@ function SelectedNodeInteractive({ node, children }: Props) {
   // 子孫レンダラ(Frame の translate(x, y) など)はこの回転の内側にあるため、
   // 自動的に正しい位置で回転する。選択枠/ハンドルも一緒に回るので追加の補正は不要。
   const rotation = (node as { rotation?: number }).rotation ?? 0;
-  const groupTransform =
-    rotation !== 0 && width > 0 && height > 0
-      ? `rotate(${-rotation} ${x + width / 2} ${y + height / 2})`
-      : undefined;
+  const flipX = (node as { flipX?: boolean }).flipX === true;
+  const flipY = (node as { flipY?: boolean }).flipY === true;
+  const cssBlend = blendModeToCss((node as { blendMode?: BlendMode }).blendMode);
+  const groupTransform = buildNodeTransform(x, y, width, height, rotation, flipX, flipY);
 
   const handleClick = (e: React.MouseEvent) => {
     if (isDragging.current || isResizing.current) return;
@@ -690,7 +717,10 @@ function SelectedNodeInteractive({ node, children }: Props) {
       onPointerMove={handlePointerMove}
       onPointerUp={handlePointerUp}
       onPointerCancel={handlePointerUp}
-      style={{ cursor: isSelected ? 'move' : 'pointer' }}
+      style={{
+        cursor: isSelected ? 'move' : 'pointer',
+        ...(cssBlend ? { mixBlendMode: cssBlend as React.CSSProperties['mixBlendMode'] } : {}),
+      }}
     >
       <title>{tooltipText}</title>
       {width > 0 && height > 0 && (

@@ -444,4 +444,109 @@ describe('Figma (.fig) <-> .pen converter', () => {
       }
     }
   });
+
+  it('renders donut/arc ellipses, star innerRadius polygons, partial rectangle borders, and outline masks', async () => {
+    const React = await import('react');
+    const { renderToStaticMarkup } = await import('react-dom/server');
+    const { PenNodeView } = await import('../src/pen/renderer/PenNode');
+    const { EditorProvider } = await import('../src/pen/state/EditorContext');
+
+    const testDoc: PenDocument = {
+      version: '1.0',
+      children: [
+        {
+          type: 'frame',
+          id: 'stage',
+          x: 0,
+          y: 0,
+          width: 400,
+          height: 200,
+          layout: 'none',
+          isSection: true,
+          name: 'Flow Section',
+          stroke: { fill: '#9747ff', thickness: 1.5, dashPattern: [10, 5] },
+          children: [
+            {
+              type: 'ellipse',
+              id: 'donut',
+              x: 10,
+              y: 10,
+              width: 60,
+              height: 60,
+              innerRadius: 0.6,
+              startAngle: 0,
+              sweepAngle: 270,
+              fill: '#38bdf8',
+            },
+            {
+              type: 'polygon',
+              id: 'star',
+              x: 80,
+              y: 10,
+              width: 60,
+              height: 60,
+              polygonCount: 5,
+              innerRadius: 0.5,
+              fill: '#facc15',
+            },
+            {
+              type: 'rectangle',
+              id: 'partial-rect',
+              x: 150,
+              y: 10,
+              width: 80,
+              height: 40,
+              fill: '#ffffff',
+              stroke: { fill: '#111827', thickness: { top: 2, bottom: 2 } },
+            },
+            {
+              type: 'line',
+              id: 'vert-line',
+              x: 250,
+              y: 30,
+              width: 50,
+              height: 0,
+              rotation: 90,
+              stroke: { fill: '#ef4444', thickness: 2, dashPattern: [4, 4] },
+            },
+            {
+              type: 'rectangle',
+              id: 'outline-mask',
+              x: 300,
+              y: 10,
+              width: 50,
+              height: 50,
+              mask: true,
+              maskType: 'outline',
+            },
+            {
+              type: 'rectangle',
+              id: 'masked-fill',
+              x: 300,
+              y: 10,
+              width: 50,
+              height: 50,
+              flipX: true,
+              fill: '#22c55e',
+            },
+          ],
+        },
+      ],
+    };
+
+    const svgEl = React.createElement(
+      'svg',
+      null,
+      React.createElement(PenNodeView, { node: testDoc.children[0] }),
+    );
+    const html = renderToStaticMarkup(
+      React.createElement(EditorProvider, { doc: testDoc, children: svgEl }),
+    );
+
+    expect(html).toContain('Flow Section');
+    expect(html).toContain('stroke-dasharray="10 5"');
+    expect(html).toContain('mask-outline-mask');
+    expect(html).toContain('scale(-1 1)');
+    expect(html).toContain('rotate(-90 275 30)');
+  });
 });

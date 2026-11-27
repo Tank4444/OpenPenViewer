@@ -7,6 +7,8 @@ import {
   resolveFilter,
   resolveStrokeWidth,
   resolveStrokeAttrs,
+  hasPartialStroke,
+  resolvePartialStroke,
 } from './paint';
 import { isCornerRadiusArray, roundedRectPath } from './roundedRectPath';
 
@@ -23,12 +25,13 @@ export function Rectangle({ node }: { node: RectangleNode }) {
   const rx = rawRx != null ? Math.min(rawRx, width / 2, height / 2) : rawRx;
 
   const layers = resolveFillLayers(node.fill, ctx);
+  const partial = resolvePartialStroke(node.stroke);
+  const isPartial = hasPartialStroke(node.stroke);
   const strokeColor = resolveStroke(node.stroke, ctx);
-  const strokeWidth = resolveStrokeWidth(node.stroke);
+  const strokeWidth = isPartial ? 0 : resolveStrokeWidth(node.stroke);
   const strokeAttrs = resolveStrokeAttrs(node.stroke);
   const filter = resolveFilter(ctx);
 
-  // stroke.align: 'inside' / 'outside' で rect の座標をオフセット
   const align = node.stroke?.align ?? 'center';
   const sw2 = strokeWidth / 2;
   const strokeRect = align === 'inside'
@@ -36,17 +39,35 @@ export function Rectangle({ node }: { node: RectangleNode }) {
     : align === 'outside'
     ? { x: x - sw2, y: y - sw2, w: width + strokeWidth, h: height + strokeWidth }
     : { x, y, w: width, h: height };
-  // inside/outside のとき対応する cornerRadius も調整（内側: 縮小、外側: 拡大）
   const strokeRx = rx != null
     ? Math.max(0, align === 'inside' ? rx - sw2 : align === 'outside' ? rx + sw2 : rx)
     : undefined;
   const strokeCrArray = asArray
-    ? (asArray.map((r) => Math.max(0, align === 'inside' ? r - sw2 : align === 'outside' ? r + sw2 : r)) as [number, number, number, number])
+    ? (asArray.map((r) =>
+        r <= 0 ? 0 : Math.max(0, align === 'inside' ? r - sw2 : align === 'outside' ? r + sw2 : r),
+      ) as [number, number, number, number])
     : null;
 
-  const hasStroke = strokeWidth > 0 && strokeColor !== 'none';
+  const hasStroke = !isPartial && strokeWidth > 0 && strokeColor !== 'none';
 
-  // cornerRadius が [nw, ne, se, sw] の配列なら path で描画
+  const partialBorderEl =
+    isPartial && partial && strokeColor !== 'none' ? (
+      <>
+        {partial.top > 0 && (
+          <line x1={x} y1={y} x2={x + width} y2={y} stroke={strokeColor} strokeWidth={partial.top} {...strokeAttrs} />
+        )}
+        {partial.bottom > 0 && (
+          <line x1={x} y1={y + height} x2={x + width} y2={y + height} stroke={strokeColor} strokeWidth={partial.bottom} {...strokeAttrs} />
+        )}
+        {partial.left > 0 && (
+          <line x1={x} y1={y} x2={x} y2={y + height} stroke={strokeColor} strokeWidth={partial.left} {...strokeAttrs} />
+        )}
+        {partial.right > 0 && (
+          <line x1={x + width} y1={y} x2={x + width} y2={y + height} stroke={strokeColor} strokeWidth={partial.right} {...strokeAttrs} />
+        )}
+      </>
+    ) : null;
+
   if (asArray) {
     const fillPath = roundedRectPath(x, y, width, height, asArray);
     const strokePath = roundedRectPath(
@@ -64,6 +85,7 @@ export function Rectangle({ node }: { node: RectangleNode }) {
             d={fillPath}
             fill={l.paint}
             fillOpacity={l.opacity !== 1 ? l.opacity : undefined}
+            style={l.blendMode ? ({ mixBlendMode: l.blendMode } as CSSProperties) : undefined}
           />
         ))}
         {hasStroke && (
@@ -75,12 +97,12 @@ export function Rectangle({ node }: { node: RectangleNode }) {
             {...strokeAttrs}
           />
         )}
+        {partialBorderEl}
       </g>
     );
   }
 
-  // 中央整列かつ fill 単一なら 1 要素 <rect> で最適化
-  if (layers.length <= 1 && (align === 'center' || !hasStroke)) {
+  if (layers.length <= 1 && !isPartial && (align === 'center' || !hasStroke)) {
     const fillPaint = layers[0]?.paint ?? 'none';
     const fillOpacity = layers[0]?.opacity;
     return (
@@ -101,7 +123,6 @@ export function Rectangle({ node }: { node: RectangleNode }) {
     );
   }
 
-  // 複数 fill or inside/outside 整列: fill と stroke を分離
   return (
     <g filter={filter}>
       {layers.map((l, i) => (
@@ -132,6 +153,7 @@ export function Rectangle({ node }: { node: RectangleNode }) {
           {...strokeAttrs}
         />
       )}
+      {partialBorderEl}
     </g>
   );
 }

@@ -14,13 +14,42 @@ export function updateNodeRecursive(
   patch: Partial<PenNode>,
 ): PenNode {
   if (node.id === nodeId) {
-    return { ...(node as object), ...patch } as PenNode;
+    const next = { ...(node as object), ...patch } as Record<string, unknown>;
+    if (
+      next.type === 'frame' &&
+      next.layoutPreservePositions === true &&
+      ('layout' in patch ||
+        'gap' in patch ||
+        'padding' in patch ||
+        'justifyContent' in patch ||
+        'alignItems' in patch)
+    ) {
+      delete next.layoutPreservePositions;
+    }
+    if (
+      next.type === 'text' &&
+      'content' in patch &&
+      !('glyphOutlines' in patch)
+    ) {
+      delete next.glyphOutlines;
+      if (!('spans' in patch)) delete next.spans;
+    }
+    return next as unknown as PenNode;
   }
   if ('children' in node && Array.isArray((node as { children?: PenNode[] }).children)) {
-    const children = (node as { children: PenNode[] }).children.map((c) =>
-      updateNodeRecursive(c, nodeId, patch),
-    );
-    return { ...(node as object), children } as PenNode;
+    const origChildren = (node as { children: PenNode[] }).children;
+    const children = origChildren.map((c) => updateNodeRecursive(c, nodeId, patch));
+    const directChildEdited = origChildren.some((c) => c.id === nodeId);
+    const rec = { ...(node as object), children } as Record<string, unknown>;
+    if (
+      directChildEdited &&
+      rec.type === 'frame' &&
+      rec.layoutPreservePositions === true &&
+      ('width' in patch || 'height' in patch || 'layoutPosition' in patch)
+    ) {
+      delete rec.layoutPreservePositions;
+    }
+    return rec as unknown as PenNode;
   }
   return node;
 }

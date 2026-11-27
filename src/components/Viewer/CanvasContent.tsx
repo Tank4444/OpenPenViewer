@@ -62,7 +62,7 @@ export const CanvasContent = memo(function CanvasContent({ cullViewBox }: Canvas
         y={-1e6}
         width={2e6}
         height={2e6}
-        fill="transparent"
+        fill={doc.background ?? 'transparent'}
         onClick={() => {
           if (store.getState().activeTool === 'select') selectNode(null);
         }}

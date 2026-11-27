@@ -35,6 +35,7 @@ export type FilterRef = {
   kind: 'filter';
   id: string;
   effects: (BlurEffect | ShadowEffect)[];
+  zeroExtent?: boolean;
 };
 
 export interface PaintRegistry {
@@ -115,8 +116,16 @@ function walkNode(node: PenNode, registry: PaintRegistry): void {
     const enabled = list.filter((e): e is Effect => !!e && e.enabled !== false);
     if (enabled.length > 0) {
       const id = `filter-${nodeId}`;
+      const nw = (node as { width?: unknown }).width;
+      const nh = (node as { height?: unknown }).height;
+      const zeroExtent = nw === 0 || nh === 0;
       registry.filterMap.set(nodeId, id);
-      registry.filters.push({ kind: 'filter', id, effects: enabled });
+      registry.filters.push({
+        kind: 'filter',
+        id,
+        effects: enabled,
+        ...(zeroExtent ? { zeroExtent: true } : {}),
+      });
     }
   }
 

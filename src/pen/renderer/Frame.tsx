@@ -10,6 +10,7 @@ import {
   resolveFillLayers,
   resolveStroke,
   resolveStrokeWidth,
+  resolveStrokeAttrs,
   resolveFilter,
   hasPartialStroke,
   resolvePartialStroke,
@@ -31,24 +32,47 @@ export function Frame({ node }: { node: FrameNode }) {
 
   const fillLayers = resolveFillLayers(node.fill, ctx);
   const filter = resolveFilter(ctx);
-  // cornerRadius: number (従来, 全 4 角共通) or [nw, ne, se, sw]
   const rawCr = node.cornerRadius;
   const crArr = isCornerRadiusArray(rawCr) ? rawCr : null;
   const rawRx = typeof rawCr === 'number' ? rawCr : undefined;
   const rx = rawRx != null && width != null && height != null
-    ? Math.min(rawRx, (width) / 2, (height) / 2)
+    ? Math.min(rawRx, width / 2, height / 2)
     : rawRx;
 
-  // 部分ボーダー判定
   const partial = resolvePartialStroke(node.stroke);
   const isPartial = hasPartialStroke(node.stroke);
   const strokeColor = resolveStroke(node.stroke, ctx);
   const strokeWidth = isPartial ? 0 : resolveStrokeWidth(node.stroke);
+  const strokeAttrs = resolveStrokeAttrs(node.stroke);
+  const hasUniformStroke = !isPartial && strokeWidth > 0 && strokeColor !== 'none';
 
-  return (
+  const align = node.stroke?.align ?? 'center';
+  const sw2 = strokeWidth / 2;
+  const strokeBox =
+    width != null && height != null
+      ? align === 'inside'
+        ? { x: sw2, y: sw2, w: Math.max(0, width - strokeWidth), h: Math.max(0, height - strokeWidth) }
+        : align === 'outside'
+          ? { x: -sw2, y: -sw2, w: width + strokeWidth, h: height + strokeWidth }
+          : { x: 0, y: 0, w: width, h: height }
+      : null;
+  const strokeRx =
+    rx != null
+      ? Math.max(0, align === 'inside' ? rx - sw2 : align === 'outside' ? rx + sw2 : rx)
+      : undefined;
+  const strokeCrArr = crArr
+    ? (crArr.map((r) =>
+        r <= 0 ? 0 : Math.max(0, align === 'inside' ? r - sw2 : align === 'outside' ? r + sw2 : r),
+      ) as [
+        number,
+        number,
+        number,
+        number,
+      ])
+    : null;
+
+  const content = (
     <g
-      transform={transform}
-      opacity={opacity}
       clipPath={clipId ? `url(#${clipId})` : undefined}
       filter={filter}
     >
@@ -63,15 +87,12 @@ export function Frame({ node }: { node: FrameNode }) {
           </clipPath>
         </defs>
       )}
-      {/* 背景 fill レイヤー群（配列順に composite） — cornerRadius 配列なら <path>、通常は <rect> */}
       {width != null && height != null && crArr && fillLayers.map((l, i) => (
         <path
           key={`bg-${i}`}
           d={roundedRectPath(0, 0, width, height, crArr)}
           fill={l.paint}
           fillOpacity={l.opacity !== 1 ? l.opacity : undefined}
-          stroke={i === fillLayers.length - 1 && !isPartial ? strokeColor : 'none'}
-          strokeWidth={i === fillLayers.length - 1 && !isPartial ? strokeWidth : 0}
           style={l.blendMode ? ({ mixBlendMode: l.blendMode } as CSSProperties) : undefined}
         />
       ))}
@@ -86,58 +107,72 @@ export function Frame({ node }: { node: FrameNode }) {
           ry={rx}
           fill={l.paint}
           fillOpacity={l.opacity !== 1 ? l.opacity : undefined}
-          stroke={i === fillLayers.length - 1 && !isPartial ? strokeColor : 'none'}
-          strokeWidth={i === fillLayers.length - 1 && !isPartial ? strokeWidth : 0}
           style={l.blendMode ? ({ mixBlendMode: l.blendMode } as CSSProperties) : undefined}
         />
       ))}
-      {/* fill が全く無いが stroke だけある場合 */}
-      {width != null && height != null && fillLayers.length === 0 && strokeWidth > 0 && !isPartial && strokeColor !== 'none' && (
-        crArr ? (
+      <LayoutGridOverlay frame={node} />
+      {node.children && renderMaskedChildren(node.children)}
+    </g>
+  );
+
+  return (
+    <g transform={transform} opacity={opacity}>
+      {node.isSection && node.name && (
+        <text
+          x={4}
+          y={-10}
+          fontSize={16}
+          fontWeight={600}
+          fontFamily="Inter, system-ui, sans-serif"
+          fill="#9CA3AF"
+          pointerEvents="none"
+        >
+          {node.name}
+        </text>
+      )}
+      {content}
+      {hasUniformStroke && strokeBox && (
+        strokeCrArr ? (
           <path
-            d={roundedRectPath(0, 0, width, height, crArr)}
+            d={roundedRectPath(strokeBox.x, strokeBox.y, strokeBox.w, strokeBox.h, strokeCrArr)}
             fill="none"
             stroke={strokeColor}
             strokeWidth={strokeWidth}
+            {...strokeAttrs}
+            pointerEvents="none"
           />
         ) : (
           <rect
-            x={0}
-            y={0}
-            width={width}
-            height={height}
-            rx={rx}
-            ry={rx}
+            x={strokeBox.x}
+            y={strokeBox.y}
+            width={strokeBox.w}
+            height={strokeBox.h}
+            rx={strokeRx}
+            ry={strokeRx}
             fill="none"
             stroke={strokeColor}
             strokeWidth={strokeWidth}
+            {...strokeAttrs}
+            pointerEvents="none"
           />
         )
       )}
-      {/* 部分ボーダー: 各辺を個別の line で描画 */}
       {isPartial && partial && width != null && height != null && strokeColor !== 'none' && (
         <>
           {partial.top > 0 && (
-            <line x1={0} y1={0} x2={width} y2={0}
-              stroke={strokeColor} strokeWidth={partial.top} />
+            <line x1={0} y1={0} x2={width} y2={0} stroke={strokeColor} strokeWidth={partial.top} {...strokeAttrs} />
           )}
           {partial.bottom > 0 && (
-            <line x1={0} y1={height} x2={width} y2={height}
-              stroke={strokeColor} strokeWidth={partial.bottom} />
+            <line x1={0} y1={height} x2={width} y2={height} stroke={strokeColor} strokeWidth={partial.bottom} {...strokeAttrs} />
           )}
           {partial.left > 0 && (
-            <line x1={0} y1={0} x2={0} y2={height}
-              stroke={strokeColor} strokeWidth={partial.left} />
+            <line x1={0} y1={0} x2={0} y2={height} stroke={strokeColor} strokeWidth={partial.left} {...strokeAttrs} />
           )}
           {partial.right > 0 && (
-            <line x1={width} y1={0} x2={width} y2={height}
-              stroke={strokeColor} strokeWidth={partial.right} />
+            <line x1={width} y1={0} x2={width} y2={height} stroke={strokeColor} strokeWidth={partial.right} {...strokeAttrs} />
           )}
         </>
       )}
-      {/* Layout grids は背景 fill の直後、children の前に配置 */}
-      <LayoutGridOverlay frame={node} />
-      {node.children && renderMaskedChildren(node.children)}
     </g>
   );
 }

@@ -3,7 +3,9 @@
  * Figma と同じく、半透明のガイドとして描画する（クリック不可）。
  */
 
+import { useSyncExternalStore } from 'react';
 import type { FrameNode, LayoutGrid } from '../../pen/types';
+import { useOptionalEditorStore } from '../../pen/state/EditorContext';
 
 interface Props {
   frame: FrameNode;
@@ -44,9 +46,18 @@ function getSectionRanges(
   }));
 }
 
+const noopSubscribe = () => () => {};
+const getFalse = () => false;
+
 export function LayoutGridOverlay({ frame }: Props) {
+  const store = useOptionalEditorStore();
+  const showLayoutGrids = useSyncExternalStore(
+    store ? store.subscribe : noopSubscribe,
+    store ? () => store.getState().showLayoutGrids : getFalse,
+    getFalse,
+  );
   const grids = frame.layoutGrids;
-  if (!grids || grids.length === 0) return null;
+  if (!showLayoutGrids || !grids || grids.length === 0) return null;
   const w = typeof frame.width === 'number' ? frame.width : 0;
   const h = typeof frame.height === 'number' ? frame.height : 0;
   if (w <= 0 || h <= 0) return null;

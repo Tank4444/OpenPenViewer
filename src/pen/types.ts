@@ -64,6 +64,9 @@ export interface GradientFill {
   gradientType?: 'linear' | 'radial' | 'angular';
   colors?: GradientStop[];
   rotation?: number;
+  start?: Position;
+  end?: Position;
+  transform?: [number, number, number, number, number, number];
   center?: Position;
   size?: { width?: number; height?: number };
   opacity?: number;
@@ -74,7 +77,11 @@ export interface GradientFill {
 export interface ImageFill {
   type: 'image';
   url: string;
-  mode?: 'stretch' | 'fill' | 'fit';
+  mode?: 'stretch' | 'fill' | 'fit' | 'tile' | 'crop';
+  imageTransform?: [number, number, number, number, number, number];
+  tileScale?: number;
+  originalWidth?: number;
+  originalHeight?: number;
   opacity?: number;
   enabled?: boolean;
   blendMode?: BlendMode;
@@ -182,6 +189,8 @@ interface NodeBase extends Position {
    * Figma の "Use as mask" と同等。
    */
   mask?: boolean;
+  maskType?: 'alpha' | 'outline' | 'luminance';
+  blendMode?: BlendMode;
   /**
    * Prototype: Present モードでこのノードをタップしたときに遷移する対象 frame の ID。
    * Figma の Prototype Connection 相当。editor 拡張。
@@ -229,12 +238,31 @@ export interface PolygonNode extends GraphicsBase {
   type: 'polygon';
   polygonCount?: number;
   cornerRadius?: number;
+  innerRadius?: number;
 }
 
 export interface PathNode extends GraphicsBase {
   type: 'path';
   geometry?: string;
   fillRule?: 'nonzero' | 'evenodd';
+}
+
+export interface TextSpan {
+  text: string;
+  fill?: Color;
+  fontFamily?: string;
+  fontSize?: number;
+  fontWeight?: string;
+  fontStyle?: string;
+  letterSpacing?: number;
+  underline?: boolean;
+  strikethrough?: boolean;
+  textCase?: 'upper' | 'lower' | 'title' | 'none';
+}
+
+export interface TextGlyphRun {
+  d: string;
+  fill?: Color;
 }
 
 export interface TextNode extends GraphicsBase {
@@ -255,6 +283,8 @@ export interface TextNode extends GraphicsBase {
   paragraphSpacing?: number;
   /** 文字ケース: 'upper' = ALL CAPS、'lower'、'title' = 各単語先頭大文字 */
   textCase?: 'upper' | 'lower' | 'title' | 'none';
+  spans?: TextSpan[];
+  glyphOutlines?: TextGlyphRun[];
 }
 
 /**
@@ -287,6 +317,8 @@ export interface FrameNode extends GraphicsBase {
   cornerRadius?: number | [number, number, number, number];
   clip?: boolean;
   layout?: 'none' | 'vertical' | 'horizontal';
+  layoutPreservePositions?: boolean;
+  isSection?: boolean;
   gap?: number;
   padding?: number | [number, number] | [number, number, number, number];
   justifyContent?: 'start' | 'center' | 'end' | 'space_between' | 'space_around';
@@ -439,6 +471,7 @@ export interface PenPage {
 export interface PenDocument {
   version: string;
   children: PenNode[];
+  background?: Color;
   /** Multi-page documents (e.g. Figma .fig imports with multiple CANVAS pages) */
   pages?: PenPage[];
   activePageId?: string;

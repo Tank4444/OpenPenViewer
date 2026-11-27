@@ -217,6 +217,13 @@ function readBody(req) {
 
 // ── WebSocket Server (同じ HTTP サーバー上) ──
 const wss = new WebSocketServer({ server: httpServer });
+wss.on('error', (err) => {
+  if (err && err.code === 'EADDRINUSE') {
+    // Handled by httpServer.on('error')
+    return;
+  }
+  log(`WebSocket server error: ${err?.message || err}`);
+});
 const wsClients = new Set();
 const pendingScreenshots = new Map();
 let nextShotId = 1;
@@ -570,7 +577,43 @@ const TOOLS = [
 const SERVER_INSTRUCTIONS =
   'OpenPenViewer MCP server. Before creating or editing .pen designs, call list_skills and read the relevant skill with get_skill (e.g. pen-format-and-layout, ui-design-system, visual-qa-workflow, figma-export-ready, design-to-code-handoff). Always visually verify changes with get_screenshot.';
 
-function handleMcpRequest(msg) {
+let isProxyMode = false;
+let resolveServerReady;
+const serverReady = new Promise((resolve) => { resolveServerReady = resolve; });
+
+async function bridgeRequest(path, options = {}) {
+  const res = await fetch(`http://127.0.0.1:${PORT}${path}`, options);
+  if (!res.ok) {
+    const text = await res.text().catch(() => '');
+    throw new Error(`Bridge HTTP ${res.status} on ${path}: ${text || res.statusText}`);
+  }
+  return res;
+}
+
+async function loadDoc() {
+  if (!isProxyMode) return getPenDoc();
+  const res = await bridgeRequest('/document');
+  return res.json();
+}
+
+async function saveDoc(doc) {
+  if (!isProxyMode) {
+    ydoc.transact(() => {
+      if (doc.version !== undefined) ymap.set('version', doc.version ?? '1.0');
+      if (doc.children !== undefined) ymap.set('children', JSON.stringify(doc.children));
+      if (doc.variables !== undefined) ymap.set('variables', JSON.stringify(doc.variables));
+    });
+    broadcastDoc(getPenDoc());
+    return;
+  }
+  await bridgeRequest('/document', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(doc),
+  });
+}
+
+async function handleMcpRequest(msg) {
   const { id, method, params } = msg;
   if (method === 'initialize') {
     return respond(id, {
@@ -604,26 +647,29 @@ function handleMcpRequest(msg) {
       ],
     });
   }
-  if (method === 'notifications/initialized') return;
+  if (method === 'notifications/initialized' || id === undefined) return;
+  if (method === 'ping') return respond(id, {});
 
   if (method === 'tools/call') {
+    await serverReady;
     const name = params?.name;
     const args = params?.arguments ?? {};
-    const doc = getPenDoc();
-    switch (name) {
-      case 'list_skills':
-        return respond(id, { content: [{ type: 'text', text: JSON.stringify(listSkills(), null, 2) }] });
-      case 'get_skill': {
-        const skill = readSkill(args.name);
-        if (!skill) {
-          const available = listSkills().map((s) => s.name).join(', ');
-          return respond(id, {
-            content: [{ type: 'text', text: `Skill not found: "${args.name}". Available skills: ${available}` }],
-            isError: true,
-          });
-        }
-        return respond(id, { content: [{ type: 'text', text: skill.content }] });
+    if (name === 'list_skills') {
+      return respond(id, { content: [{ type: 'text', text: JSON.stringify(listSkills(), null, 2) }] });
+    }
+    if (name === 'get_skill') {
+      const skill = readSkill(args.name);
+      if (!skill) {
+        const available = listSkills().map((s) => s.name).join(', ');
+        return respond(id, {
+          content: [{ type: 'text', text: `Skill not found: "${args.name}". Available skills: ${available}` }],
+          isError: true,
+        });
       }
+      return respond(id, { content: [{ type: 'text', text: skill.content }] });
+    }
+    const doc = await loadDoc();
+    switch (name) {
       case 'list_frames': return respond(id, { content: [{ type: 'text', text: JSON.stringify(listFrames(doc.children), null, 2) }] });
       case 'read_node': {
         const node = findNode(doc.children, args.id);
@@ -640,8 +686,7 @@ function handleMcpRequest(msg) {
           return respond(id, { content: [{ type: 'text', text: `Node not found: ${args.id}` }], isError: true });
         }
         const updated = updateNode(doc.children, args.id, args.patch);
-        ydoc.transact(() => { ymap.set('children', JSON.stringify(updated)); });
-        broadcastDoc(getPenDoc());
+        await saveDoc({ ...doc, children: updated });
         return respond(id, { content: [{ type: 'text', text: `Updated: ${args.id}` }] });
       }
       case 'add_node': {
@@ -655,8 +700,7 @@ function handleMcpRequest(msg) {
         if (!res.inserted) {
           return respond(id, { content: [{ type: 'text', text: `Parent node not found: ${args.parentId}` }], isError: true });
         }
-        ydoc.transact(() => { ymap.set('children', JSON.stringify(res.updated)); });
-        broadcastDoc(getPenDoc());
+        await saveDoc({ ...doc, children: res.updated });
         return respond(id, { content: [{ type: 'text', text: JSON.stringify({ ok: true, id: nodeToInsert.id, parentId: args.parentId ?? null }) }] });
       }
       case 'delete_node': {
@@ -667,8 +711,7 @@ function handleMcpRequest(msg) {
         if (!res.removed) {
           return respond(id, { content: [{ type: 'text', text: `Node not found: ${args.id}` }], isError: true });
         }
-        ydoc.transact(() => { ymap.set('children', JSON.stringify(res.updated)); });
-        broadcastDoc(getPenDoc());
+        await saveDoc({ ...doc, children: res.updated });
         return respond(id, { content: [{ type: 'text', text: `Deleted: ${args.id}` }] });
       }
       case 'set_variable': {
@@ -683,12 +726,23 @@ function handleMcpRequest(msg) {
           return respond(id, { content: [{ type: 'text', text: 'Variable value is required.' }], isError: true });
         }
         const vars = { ...(doc.variables ?? {}), [cleanName]: { type: args.type, value: args.value } };
-        ydoc.transact(() => { ymap.set('variables', JSON.stringify(vars)); });
-        broadcastDoc(getPenDoc());
+        await saveDoc({ ...doc, variables: vars });
         return respond(id, { content: [{ type: 'text', text: `Set variable $${cleanName} = ${JSON.stringify(args.value)}` }] });
       }
       case 'get_document': return respond(id, { content: [{ type: 'text', text: JSON.stringify(doc, null, 2) }] });
-      case 'get_status': return respond(id, { content: [{ type: 'text', text: JSON.stringify({ wsPort: PORT, clients: wsClients.size, nodes: doc.children.length }, null, 2) }] });
+      case 'get_status': {
+        if (isProxyMode) {
+          const res = await bridgeRequest('/status');
+          const status = await res.json();
+          return respond(id, {
+            content: [{
+              type: 'text',
+              text: JSON.stringify({ wsPort: status.wsPort, clients: status.connectedClients, nodes: status.nodeCount, proxyMode: true }, null, 2),
+            }],
+          });
+        }
+        return respond(id, { content: [{ type: 'text', text: JSON.stringify({ wsPort: PORT, clients: wsClients.size, nodes: doc.children.length }, null, 2) }] });
+      }
       case 'check_ui_states': {
         const results = analyzeUIStates(doc);
         const report = formatReport(results);
@@ -729,6 +783,26 @@ function handleMcpRequest(msg) {
       }
       case 'get_screenshot': {
         const scale = typeof args.scale === 'number' && Number.isFinite(args.scale) ? args.scale : 2;
+        if (isProxyMode) {
+          const qs = new URLSearchParams({ scale: String(scale) });
+          if (args.nodeId) qs.set('nodeId', args.nodeId);
+          try {
+            const res = await bridgeRequest(`/screenshot?${qs.toString()}`);
+            const buf = Buffer.from(await res.arrayBuffer());
+            const mimeType = res.headers.get('content-type') || 'image/png';
+            respond(id, {
+              content: [
+                { type: 'image', data: buf.toString('base64'), mimeType },
+              ],
+            });
+          } catch (err) {
+            respond(id, {
+              content: [{ type: 'text', text: `Screenshot failed: ${err instanceof Error ? err.message : String(err)}` }],
+              isError: true,
+            });
+          }
+          return;
+        }
         requestScreenshot(args.nodeId, scale)
           .then((shot) => {
             const base64 = shot.dataUrl.replace(/^data:image\/\w+;base64,/, '');
@@ -766,26 +840,27 @@ rl.on('line', (line) => {
     respondError(null, -32700, `Parse error: ${err instanceof Error ? err.message : String(err)}`);
     return;
   }
-  try {
-    handleMcpRequest(msg);
-  } catch (err) {
+  Promise.resolve(handleMcpRequest(msg)).catch((err) => {
     log(`MCP handler error: ${err?.stack || err}`);
     if (msg && msg.id !== undefined) {
       respondError(msg.id, -32603, `Internal error: ${err instanceof Error ? err.message : String(err)}`);
     }
-  }
+  });
 });
 
 // ── Start ──
 httpServer.on('error', (err) => {
   if (err && err.code === 'EADDRINUSE') {
-    log(`Port ${PORT} is already in use by another bridge instance; MCP stdio remains active.`);
+    isProxyMode = true;
+    log(`Port ${PORT} is already in use by another bridge instance; proxying MCP requests to http://127.0.0.1:${PORT}.`);
   } else {
     log(`HTTP server error: ${err?.message || err}`);
   }
+  resolveServerReady();
 });
 
 httpServer.listen(PORT, () => {
+  resolveServerReady();
   log(`Server listening on http://localhost:${PORT}`);
   log('');
   log('Endpoints:');

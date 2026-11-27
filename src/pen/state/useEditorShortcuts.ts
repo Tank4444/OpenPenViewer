@@ -72,6 +72,13 @@ export function useEditorShortcuts({
         }
       }
 
+      // Shift+G: Toggle Layout Grids visibility (Figma standard shortcut)
+      if (!mod && !e.altKey && e.shiftKey && !isInput && (e.key === 'G' || e.key === 'g')) {
+        e.preventDefault();
+        setState((s) => ({ ...s, showLayoutGrids: !s.showLayoutGrids }));
+        return;
+      }
+
       // Cmd+Alt+M: 選択ノードを mask としてトグル（Figma "Use as mask"）
       if (mod && e.altKey && (e.key === 'm' || e.key === 'M' || e.key === 'µ')) {
         if (!isInput) {

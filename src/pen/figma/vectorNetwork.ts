@@ -672,13 +672,15 @@ export function commandsBlobToSvgPath(bytes: Uint8Array): string {
   const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
   let off = 0;
   const parts: string[] = [];
-  const f = (n: number) => (Number.isFinite(n) ? Number(n.toFixed(2)) : 0);
+  const f = (n: number) => (Number.isFinite(n) ? Math.round(n * 1000) / 1000 : 0);
 
   while (off < bytes.byteLength) {
     const cmd = view.getUint8(off++);
     switch (cmd) {
       case 0:
-        parts.push('Z');
+        if (parts.length > 0 && parts[parts.length - 1] !== 'Z') {
+          parts.push('Z');
+        }
         break;
       case 1:
         if (off + 8 > bytes.byteLength) return parts.join(' ');

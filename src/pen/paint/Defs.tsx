@@ -3,7 +3,7 @@
  * ドキュメント 1 回だけ出力する。
  */
 
-import type { GradientFill, MeshGradientFill } from '../types';
+import type { GradientFill, ImageFill, MeshGradientFill } from '../types';
 import type { PaintRegistry, PaintRef, FilterRef } from './registry';
 
 export function Defs({ registry }: { registry: PaintRegistry }) {
@@ -18,7 +18,6 @@ export function Defs({ registry }: { registry: PaintRegistry }) {
 
 /** 安全な画像 URL のみ許可し、javascript: / data:text/html 等を排除 */
 function sanitizeImageUrl(url: string): string | null {
-  // data:image/* (base64) は許可
   if (/^data:image\/[a-z+]+;base64,/i.test(url)) return url;
   try {
     const parsed = new URL(url);
@@ -34,19 +33,68 @@ function sanitizeImageUrl(url: string): string | null {
 function renderPaint(p: PaintRef) {
   if (p.kind === 'gradient') return renderGradient(p.id, p.def as GradientFill);
   if (p.kind === 'mesh') return renderMeshGradient(p.id, p.def as MeshGradientFill);
-  // image fill (pattern)
-  const def = p.def as { url: string; mode?: 'stretch' | 'fill' | 'fit' };
+
+  const def = p.def as ImageFill;
   const safeUrl = sanitizeImageUrl(def.url);
   if (!safeUrl) return null;
-  // mode → SVG preserveAspectRatio
-  //   'stretch' (歪めて埋める) → 'none'
-  //   'fill' (=cover, 短辺合わせで crop) → 'xMidYMid slice'
-  //   'fit' (=contain, 長辺合わせで余白) → 'xMidYMid meet'
+
+  if (def.mode === 'tile') {
+    const scale = typeof def.tileScale === 'number' && def.tileScale > 0 ? def.tileScale : 1;
+    const tileW = Math.max(1, (def.originalWidth ?? p.width ?? 64) * scale);
+    const tileH = Math.max(1, (def.originalHeight ?? p.height ?? 64) * scale);
+    return (
+      <pattern
+        key={p.id}
+        id={p.id}
+        patternUnits="userSpaceOnUse"
+        width={tileW}
+        height={tileH}
+      >
+        <image
+          href={safeUrl}
+          x={0}
+          y={0}
+          width={tileW}
+          height={tileH}
+          preserveAspectRatio="none"
+        />
+      </pattern>
+    );
+  }
+
+  if (def.mode === 'crop' && Array.isArray(def.imageTransform) && def.imageTransform.length === 6) {
+    const [a, b, c, d, e, f] = def.imageTransform;
+    const W = typeof p.width === 'number' && p.width > 0 ? p.width : 100;
+    const H = typeof p.height === 'number' && p.height > 0 ? p.height : 100;
+    const mat = `matrix(${a} ${b * (H / W)} ${c * (W / H)} ${d} ${e * W} ${f * H})`;
+    return (
+      <pattern
+        key={p.id}
+        id={p.id}
+        patternUnits="objectBoundingBox"
+        width={1}
+        height={1}
+        viewBox={`0 0 ${W} ${H}`}
+        preserveAspectRatio="none"
+      >
+        <image
+          href={safeUrl}
+          x={0}
+          y={0}
+          width={W}
+          height={H}
+          preserveAspectRatio="none"
+          transform={mat}
+        />
+      </pattern>
+    );
+  }
+
   const preserve = def.mode === 'stretch'
     ? 'none'
     : def.mode === 'fit'
     ? 'xMidYMid meet'
-    : 'xMidYMid slice'; // fill or undefined
+    : 'xMidYMid slice';
   const hasSize = typeof p.width === 'number' && p.width > 0 && typeof p.height === 'number' && p.height > 0;
   if (hasSize) {
     return (
@@ -89,11 +137,6 @@ function renderPaint(p: PaintRef) {
   );
 }
 
-/**
- * Mesh gradient の近似描画:
- * SVG に直接の対応が無いので、左上↔右下の対角 linear gradient を描く。
- * 対角 2 色以上あれば bezier 補間らしさは出ないが破綻しない fallback。
- */
 function renderMeshGradient(id: string, def: MeshGradientFill) {
   const cols = Math.max(1, def.columns ?? 1);
   const rows = Math.max(1, def.rows ?? 1);
@@ -101,14 +144,10 @@ function renderMeshGradient(id: string, def: MeshGradientFill) {
   if (colors.length === 0) {
     return <linearGradient key={id} id={id} />;
   }
-  // 頂点カラーの平均を補間の基準にする — 単純に対角方向に並べる
   const topLeft = colors[0];
   const topRight = colors[cols - 1] ?? colors[colors.length - 1];
   const bottomRight = colors[colors.length - 1];
   const bottomLeft = colors[(rows - 1) * cols] ?? colors[colors.length - 1];
-  // 2 本の linear gradient を重ねると近似度が上がる: 横 (TL→TR→BR→BL) + 縦
-  // ただし SVG 1 つの linearGradient で 4 隅を正しく出すのは不可能なので、
-  // MVP では top 行 → bottom 行 の縦方向グラデに割り切る。
   return (
     <linearGradient key={id} id={id} x1={0} y1={0} x2={0} y2={1}>
       <stop offset="0" stopColor={topLeft} />
@@ -118,7 +157,6 @@ function renderMeshGradient(id: string, def: MeshGradientFill) {
   );
 }
 
-/** 2 つの #RRGGBB を線形ブレンド。不正な形式は第 1 色を返す。 */
 function mixColors(a: string, b: string): string {
   const pa = parseHex(a);
   const pb = parseHex(b);
@@ -146,9 +184,21 @@ function renderGradient(id: string, def: GradientFill) {
   const stops = (def.colors ?? []).map((c, i) => (
     <stop key={i} offset={c.position} stopColor={c.color} />
   ));
-  // rotation は degree(CCW, 0 = up)。SVG linearGradient は x1/y1/x2/y2 で方向を指定するので
-  // 角度を objectBoundingBox 座標系上のベクトルに変換する。
   if (type === 'linear') {
+    if (def.start && def.end && typeof def.start.x === 'number' && typeof def.start.y === 'number' && typeof def.end.x === 'number' && typeof def.end.y === 'number') {
+      return (
+        <linearGradient
+          key={id}
+          id={id}
+          x1={def.start.x}
+          y1={def.start.y}
+          x2={def.end.x}
+          y2={def.end.y}
+        >
+          {stops}
+        </linearGradient>
+      );
+    }
     const rad = ((def.rotation ?? 0) + 180) * (Math.PI / 180);
     const dx = Math.sin(rad) / 2;
     const dy = -Math.cos(rad) / 2;
@@ -166,6 +216,20 @@ function renderGradient(id: string, def: GradientFill) {
     );
   }
   if (type === 'radial') {
+    if (Array.isArray(def.transform) && def.transform.length === 6) {
+      return (
+        <radialGradient
+          key={id}
+          id={id}
+          cx={0.5}
+          cy={0.5}
+          r={0.5}
+          gradientTransform={`matrix(${def.transform.join(' ')})`}
+        >
+          {stops}
+        </radialGradient>
+      );
+    }
     const cx = def.center?.x ?? 0.5;
     const cy = def.center?.y ?? 0.5;
     const r = Math.max(def.size?.width ?? 0.5, def.size?.height ?? 0.5);
@@ -175,7 +239,6 @@ function renderGradient(id: string, def: GradientFill) {
       </radialGradient>
     );
   }
-  // angular は SVG に直接対応がないので線形で代用
   return (
     <linearGradient key={id} id={id}>
       {stops}
@@ -185,24 +248,22 @@ function renderGradient(id: string, def: GradientFill) {
 
 function renderFilter(f: FilterRef) {
   return (
-    <filter key={f.id} id={f.id} x="-50%" y="-50%" width="200%" height="200%">
+    <filter
+      key={f.id}
+      id={f.id}
+      {...(f.zeroExtent
+        ? { filterUnits: 'userSpaceOnUse', x: -1e5, y: -1e5, width: 2e5, height: 2e5 }
+        : { x: '-50%', y: '-50%', width: '200%', height: '200%' })}
+    >
       {f.effects.flatMap((e, i) => {
         if (e.type === 'blur') {
           return [<feGaussianBlur key={`b-${i}`} in="SourceGraphic" stdDeviation={e.radius ?? 4} />];
         }
-        // shadow: inner / outer を分岐
         const dx = e.offset?.x ?? 0;
         const dy = e.offset?.y ?? 0;
         const blur = e.blur ?? 4;
         const color = e.color ?? '#00000040';
         if (e.shadowType === 'inner') {
-          // 形状の内側に影を落とす。
-          //   1) SourceAlpha を反転（外側=不透明に）
-          //   2) それを blur + offset
-          //   3) offset は意図的に -dx, -dy（外側から内側に光が入る方向に反転）
-          //   4) SourceAlpha と intersect して形状内だけに絞る
-          //   5) shadow 色を flood + in で着色
-          //   6) SourceGraphic の上に over で重ねる
           const id = `${f.id}-inner-${i}`;
           return [
             <feColorMatrix
@@ -214,7 +275,6 @@ function renderFilter(f: FilterRef) {
             />,
             <feGaussianBlur key={`${id}-blur`} in={`${id}-inv`} stdDeviation={blur} result={`${id}-blur`} />,
             <feOffset key={`${id}-off`} in={`${id}-blur`} dx={dx} dy={dy} result={`${id}-off`} />,
-            // 形状内部に絞る
             <feComposite
               key={`${id}-inside`}
               in={`${id}-off`}
@@ -238,7 +298,6 @@ function renderFilter(f: FilterRef) {
             />,
           ];
         }
-        // outer shadow
         return [
           <feDropShadow key={`ds-${i}`} dx={dx} dy={dy} stdDeviation={blur} floodColor={color} />,
         ];

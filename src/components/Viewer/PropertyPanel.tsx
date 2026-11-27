@@ -22,6 +22,7 @@ export const PropertyPanel = memo(function PropertyPanel({
   const rawDocChildren = useEditorSelector((s) => s.rawDoc.children);
   const selectedNodeId = useEditorSelector((s) => s.selectedNodeId);
   const insertMode = useEditorSelector((s) => s.insertMode);
+  const showLayoutGrids = useEditorSelector((s) => s.showLayoutGrids);
   const selectedNode = useMemo(
     () => (selectedNodeId ? findNode(docChildren, selectedNodeId) : null),
     [docChildren, selectedNodeId],
@@ -33,6 +34,7 @@ export const PropertyPanel = memo(function PropertyPanel({
     pushUndoCheckpoint,
     enterInsertMode,
     exitInsertMode,
+    setShowLayoutGrids,
   } = useEditorActions();
 
   // カラーピッカー用: ドラッグ中は silent、確定時に undo に積む
@@ -315,24 +317,37 @@ export const PropertyPanel = memo(function PropertyPanel({
             patch({ layoutGrids: next } as unknown as Partial<PenNode>);
           };
           const addGrid = (pattern: 'columns' | 'rows' | 'grid') => {
-            const preset =
-              pattern === 'grid'
-                ? { pattern, size: 8, color: '#F472B6', opacity: 0.15, visible: true }
-                : {
-                    pattern,
-                    count: pattern === 'columns' ? 12 : 6,
-                    gutter: 16,
-                    offset: 24,
-                    alignment: 'stretch',
-                    color: '#F472B6',
-                    opacity: 0.15,
-                    visible: true,
-                  };
-            updateGrids([...grids, preset]);
-          };
-          return (
-            <div className="prop-panel__section">
-              <div className="prop-panel__title">Layout Grids ({grids.length})</div>
+                  const preset =
+                    pattern === 'grid'
+                      ? { pattern, size: 8, color: '#F472B6', opacity: 0.15, visible: true }
+                      : {
+                          pattern,
+                          count: pattern === 'columns' ? 12 : 6,
+                          gutter: 16,
+                          offset: 24,
+                          alignment: 'stretch',
+                          color: '#F472B6',
+                          opacity: 0.15,
+                          visible: true,
+                        };
+                  setShowLayoutGrids(true);
+                  updateGrids([...grids, preset]);
+                };
+                return (
+                  <div className="prop-panel__section">
+                    <div className="prop-panel__title" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                      <span>Layout Grids ({grids.length})</span>
+                      {grids.length > 0 && (
+                        <button
+                          type="button"
+                          className="auto-layout__btn auto-layout__btn--sm"
+                          title="Toggle Layout Grids overlay (Shift+G)"
+                          onClick={() => setShowLayoutGrids(!showLayoutGrids)}
+                        >
+                          {showLayoutGrids ? 'Hide' : 'Show'}
+                        </button>
+                      )}
+                    </div>
               <div className="auto-layout__row">
                 <button
                   type="button"

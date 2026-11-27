@@ -1,18 +1,11 @@
 /**
  * mask?: true のノードを含む子配列を SVG 上で正しくマスクして描画する。
  *
- * Figma の "Use as mask": mask ノードは自身は描画されず、後続兄弟を alpha
- * クリップする。同じ親内で複数 mask があれば独立したセグメントに分かれる。
- *
- * SVG 実装:
- *   <defs>
- *     <mask id="mask-<id>" mask-type="alpha">
- *       <renderedMaskNode />   { fill は元のまま使う — mask-type=alpha なので alpha で抜ける }
- *     </mask>
- *   </defs>
- *   <g mask="url(#mask-<id>)">
- *     <followingSiblings />
- *   </g>
+ * Figma の "Use as mask": mask ノードは自身は描画されず、後続兄弟をクリップする。
+ * maskType:
+ *  - 'alpha' (default): mask ノード自身の alpha チャネルで抜く
+ *  - 'outline': 塗りの有無や透明度に関わらず shape の輪郭で抜く
+ *  - 'luminance': 輝度で抜く
  */
 
 import type { JSX } from 'react';
@@ -22,7 +15,23 @@ import { PenNodeView } from './PenNode';
 export interface Segment {
   maskId?: string;
   maskNode?: PenNode;
+  maskType?: 'alpha' | 'outline' | 'luminance';
   children: PenNode[];
+}
+
+function forceOpaqueOutlineMask(node: PenNode): PenNode {
+  const rec = { ...(node as unknown as Record<string, unknown>) };
+  rec.opacity = 1;
+  delete rec.stroke;
+  if (Array.isArray(rec.children) && rec.children.length > 0) {
+    rec.children = (rec.children as PenNode[]).map(forceOpaqueOutlineMask);
+    if (rec.fill !== undefined) {
+      rec.fill = '#ffffff';
+    }
+  } else {
+    rec.fill = '#ffffff';
+  }
+  return rec as unknown as PenNode;
 }
 
 export function splitByMasks(children: PenNode[]): Segment[] {
@@ -31,11 +40,12 @@ export function splitByMasks(children: PenNode[]): Segment[] {
   for (const c of children) {
     const isMask = (c as { mask?: boolean }).mask === true;
     if (isMask) {
-      // 直前のセグメントを閉じる
       if (current.children.length > 0 || current.maskNode) segments.push(current);
+      const maskType = (c as { maskType?: 'alpha' | 'outline' | 'luminance' }).maskType ?? 'alpha';
       current = {
         maskId: `mask-${c.id}`,
         maskNode: c,
+        maskType,
         children: [],
       };
     } else {
@@ -46,13 +56,8 @@ export function splitByMasks(children: PenNode[]): Segment[] {
   return segments;
 }
 
-/**
- * 子配列を描画する。mask ノードが無ければ単純な列挙。
- * mask がある場合、<defs> にマスクを追加して後続兄弟を <g mask> でラップする。
- */
 export function renderMaskedChildren(children: PenNode[]): JSX.Element[] | JSX.Element {
   const segments = splitByMasks(children);
-  // mask が全く無い早道
   if (segments.length === 1 && !segments[0].maskNode) {
     return children.map((c) => <PenNodeView key={c.id} node={c} />);
   }
@@ -67,13 +72,20 @@ export function renderMaskedChildren(children: PenNode[]): JSX.Element[] | JSX.E
             </g>
           );
         }
+        const effectiveMaskNode =
+          seg.maskType === 'outline' ? forceOpaqueOutlineMask(seg.maskNode) : seg.maskNode;
+        const cssMaskType = seg.maskType === 'luminance' ? 'luminance' : 'alpha';
         return (
           <g key={`seg-${i}`}>
             <defs>
-              <mask id={seg.maskId} maskUnits="userSpaceOnUse" maskContentUnits="userSpaceOnUse">
-                {/* mask-type=alpha 相当: content の alpha を使う */}
-                <g style={{ maskType: 'alpha' } as React.CSSProperties}>
-                  <PenNodeView node={seg.maskNode} />
+              <mask
+                id={seg.maskId}
+                maskUnits="userSpaceOnUse"
+                maskContentUnits="userSpaceOnUse"
+                style={{ maskType: cssMaskType } as React.CSSProperties}
+              >
+                <g style={{ maskType: cssMaskType } as React.CSSProperties}>
+                  <PenNodeView node={effectiveMaskNode} />
                 </g>
               </mask>
             </defs>

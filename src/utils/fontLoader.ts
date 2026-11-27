@@ -36,6 +36,28 @@ const SYSTEM_OR_GENERIC_FONTS = new Set([
 
 const requestedGoogleFonts = new Set<string>();
 const loadedCustomFonts = new Set<string>();
+const availabilityCache = new Map<string, boolean>();
+let fontAvailabilityVersion = 0;
+const fontListeners = new Set<() => void>();
+
+function notifyFontAvailability(): void {
+  availabilityCache.clear();
+  fontAvailabilityVersion += 1;
+  for (const listener of fontListeners) {
+    listener();
+  }
+}
+
+export function subscribeFontAvailability(listener: () => void): () => void {
+  fontListeners.add(listener);
+  return () => {
+    fontListeners.delete(listener);
+  };
+}
+
+export function getFontAvailabilityVersion(): number {
+  return fontAvailabilityVersion;
+}
 
 const IDB_NAME = 'openpenviewer-fonts';
 const IDB_STORE = 'faces';
@@ -51,9 +73,19 @@ export function extractDocumentFonts(doc: PenDocument): string[] {
   const walk = (nodes: PenNode[] | undefined) => {
     if (!nodes) return;
     for (const node of nodes) {
-      if (node.type === 'text' && node.fontFamily) {
-        const fam = normalizeFamily(node.fontFamily);
-        if (fam) seen.add(fam);
+      if (node.type === 'text') {
+        if (node.fontFamily) {
+          const fam = normalizeFamily(node.fontFamily);
+          if (fam) seen.add(fam);
+        }
+        if (Array.isArray(node.spans)) {
+          for (const sp of node.spans) {
+            if (sp.fontFamily) {
+              const sf = normalizeFamily(sp.fontFamily);
+              if (sf) seen.add(sf);
+            }
+          }
+        }
       }
       if ('children' in node && Array.isArray(node.children)) {
         walk(node.children);
@@ -124,7 +156,9 @@ export function loadGoogleFonts(families: string[]): Promise<void> {
     promises.push(p);
   }
 
-  return Promise.all(promises).then(() => undefined);
+  return Promise.all(promises).then(() => {
+    if (promises.length > 0) notifyFontAvailability();
+  });
 }
 
 /** Convenience wrapper used by useDocument: extracts document fonts and loads them from Google Fonts. */
@@ -157,6 +191,36 @@ function isFontAvailableViaCanvas(family: string): boolean {
   } catch {
     return true;
   }
+}
+
+/** Synchronous cached check used by Text renderer to decide whether to use embedded glyph outlines. */
+export function isFontFamilyAvailable(rawFamily: string | undefined): boolean {
+  if (!rawFamily || typeof document === 'undefined') return true;
+  const fam = normalizeFamily(rawFamily);
+  if (!fam) return true;
+  const key = fam.toLowerCase();
+  if (SYSTEM_OR_GENERIC_FONTS.has(key) || loadedCustomFonts.has(key)) return true;
+
+  const cached = availabilityCache.get(key);
+  if (cached !== undefined) return cached;
+
+  let available = false;
+  if (document.fonts) {
+    for (const face of document.fonts) {
+      if (
+        face.family.replace(/^['"]|['"]$/g, '').toLowerCase() === key &&
+        face.status === 'loaded'
+      ) {
+        available = true;
+        break;
+      }
+    }
+  }
+  if (!available) {
+    available = isFontAvailableViaCanvas(fam);
+  }
+  availabilityCache.set(key, available);
+  return available;
 }
 
 /** Return font families that are neither installed locally nor loaded from Google Fonts / custom upload. */
@@ -240,6 +304,7 @@ export async function registerCustomFont(family: string, buffer: ArrayBuffer): P
   await face.load();
   document.fonts.add(face);
   loadedCustomFonts.add(family.toLowerCase());
+  notifyFontAvailability();
   await saveFontToDb(family, buffer);
 }
 
@@ -269,6 +334,7 @@ export function restoreSavedCustomFonts(): Promise<void> {
         loadedCustomFonts.add(family.toLowerCase());
       }),
     );
+    if (rows.length > 0) notifyFontAvailability();
   })();
   return restoredPromise;
 }

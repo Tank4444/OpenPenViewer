@@ -39,6 +39,8 @@ export interface EditorState {
   /** Grid Snap: ON のとき位置/サイズを gridSize (px) にラウンドする */
   gridSnap: boolean;
   gridSize: number;
+  /** Figma Layout Grids overlay visibility (Shift+G, off by default so imported designs render cleanly) */
+  showLayoutGrids: boolean;
 }
 
 /** ドキュメントツリー内のノードを再帰的に更新 */
@@ -76,6 +78,7 @@ interface EditorContextValue {
   /** Grid snap のトグルとサイズ変更 */
   setGridSnap: (enabled: boolean) => void;
   setGridSize: (size: number) => void;
+  setShowLayoutGrids: (enabled: boolean) => void;
   /** 選択ノードを Frame で囲む (Opt+Cmd+G / Figma の "Frame Selection") */
   wrapSelectionInFrame: () => void;
   /** 選択ノードの mask フラグをトグル (Cmd+Alt+M) */
@@ -157,6 +160,7 @@ export function EditorProvider({
     editingPathId: null,
     gridSnap: false,
     gridSize: 8,
+    showLayoutGrids: false,
   });
 
   /** 同期的に最新 state を参照したいコールバック（cloneNodesAtTop など）用 */
@@ -518,6 +522,10 @@ export function EditorProvider({
   const setGridSize = useCallback((size: number) => {
     const v = Math.max(1, Math.round(size));
     setState((s) => (s.gridSize === v ? s : { ...s, gridSize: v }));
+  }, []);
+
+  const setShowLayoutGrids = useCallback((enabled: boolean) => {
+    setState((s) => (s.showLayoutGrids === enabled ? s : { ...s, showLayoutGrids: enabled }));
   }, []);
 
   /**
@@ -1027,12 +1035,14 @@ export function EditorProvider({
         pages: updatedPages,
         activePageId: pageId,
         children: target.children,
+        background: target.background,
       };
       const nextDoc: PenDocument = {
         ...s.doc,
         pages: updatedPages,
         activePageId: pageId,
         children: target.children,
+        background: target.background,
       };
 
       const vb = computeViewBox(nextDoc);
@@ -1062,8 +1072,8 @@ export function EditorProvider({
   const canRedo = redoStack.current.length > 0;
 
   const actions = useMemo(
-    () => ({ selectNode, selectMultiple, toggleSelectNode, enterInsertMode, exitInsertMode, updateNode, updateNodeSilent, updateManySilent, pushUndoCheckpoint, deleteNode, replaceDocChildren, switchPage, reorderSelected, reorderChildren, addNode, cloneNodesAtTop, createComponent, unmakeComponent, insertInstance, upsertVariable, removeVariable, renameVariable, setGridSnap, setGridSize, wrapSelectionInFrame, toggleMaskSelected, applyBooleanOp, upsertStyle, removeStyle, applyStyleToSelection, flattenSelection, outlineStrokeSelected, addComment, updateComment, removeComment, detachFromParentIfOutside, setActiveTool, beginEditing, endEditing, beginPathEditing, endPathEditing, exportPen, undo, redo }),
-    [selectNode, selectMultiple, toggleSelectNode, enterInsertMode, exitInsertMode, updateNode, updateNodeSilent, updateManySilent, pushUndoCheckpoint, deleteNode, replaceDocChildren, switchPage, reorderSelected, reorderChildren, addNode, cloneNodesAtTop, createComponent, unmakeComponent, insertInstance, upsertVariable, removeVariable, renameVariable, setGridSnap, setGridSize, wrapSelectionInFrame, toggleMaskSelected, applyBooleanOp, upsertStyle, removeStyle, applyStyleToSelection, flattenSelection, outlineStrokeSelected, addComment, updateComment, removeComment, detachFromParentIfOutside, setActiveTool, beginEditing, endEditing, beginPathEditing, endPathEditing, exportPen, undo, redo],
+    () => ({ selectNode, selectMultiple, toggleSelectNode, enterInsertMode, exitInsertMode, updateNode, updateNodeSilent, updateManySilent, pushUndoCheckpoint, deleteNode, replaceDocChildren, switchPage, reorderSelected, reorderChildren, addNode, cloneNodesAtTop, createComponent, unmakeComponent, insertInstance, upsertVariable, removeVariable, renameVariable, setGridSnap, setGridSize, setShowLayoutGrids, wrapSelectionInFrame, toggleMaskSelected, applyBooleanOp, upsertStyle, removeStyle, applyStyleToSelection, flattenSelection, outlineStrokeSelected, addComment, updateComment, removeComment, detachFromParentIfOutside, setActiveTool, beginEditing, endEditing, beginPathEditing, endPathEditing, exportPen, undo, redo }),
+    [selectNode, selectMultiple, toggleSelectNode, enterInsertMode, exitInsertMode, updateNode, updateNodeSilent, updateManySilent, pushUndoCheckpoint, deleteNode, replaceDocChildren, switchPage, reorderSelected, reorderChildren, addNode, cloneNodesAtTop, createComponent, unmakeComponent, insertInstance, upsertVariable, removeVariable, renameVariable, setGridSnap, setGridSize, setShowLayoutGrids, wrapSelectionInFrame, toggleMaskSelected, applyBooleanOp, upsertStyle, removeStyle, applyStyleToSelection, flattenSelection, outlineStrokeSelected, addComment, updateComment, removeComment, detachFromParentIfOutside, setActiveTool, beginEditing, endEditing, beginPathEditing, endPathEditing, exportPen, undo, redo],
   );
 
   const value = useMemo(
@@ -1078,6 +1088,10 @@ export function EditorProvider({
       </EditorActionsCtx.Provider>
     </EditorStoreCtx.Provider>
   );
+}
+
+export function useOptionalEditorStore(): EditorStore | null {
+  return useContext(EditorStoreCtx);
 }
 
 export function useEditorStore(): EditorStore {

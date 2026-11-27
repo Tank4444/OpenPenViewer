@@ -1,59 +1,94 @@
-import type { TextNode } from '../types';
+import { useSyncExternalStore } from 'react';
+import type { TextNode, TextSpan } from '../types';
 import { usePaintRegistry } from '../paint/PaintContext';
 import { normalizeTextLines } from '../layout/flex';
 import { resolveFill, resolveFilter } from './paint';
+import {
+  getFontAvailabilityVersion,
+  isFontFamilyAvailable,
+  subscribeFontAvailability,
+} from '../../utils/fontLoader';
 
-/**
- * Pencil の text ノードを SVG <text> に変換する。
- *
- * Pencil の座標規約:
- *   - (x, y) は text bounding box の左上隅
- *   - textGrowth: "auto" → bounding box は内容にフィットする(width/height は無視)
- *   - textGrowth: "fixed-width" → width は確定、height は内容で伸びる
- *   - textGrowth: "fixed-width-height" → 両方確定
- *   - textAlign は bounding box 内での揃え方。auto では box が無いので原則無視
- *
- * SVG <text> の規約:
- *   - x, y は基準点
- *   - dominantBaseline="text-before-edge" にすると y は top
- *   - textAnchor が "start"=左, "middle"=中央, "end"=右(基準点に対して)
- *
- * よって:
- *   - auto growth: textAnchor=start, x = node.x
- *   - fixed-width + center: textAnchor=middle, x = node.x + node.width/2
- *   - fixed-width + right:  textAnchor=end,    x = node.x + node.width
- *   - fixed-width + left:   textAnchor=start,  x = node.x
- */
+function applyTextCase(
+  s: string | undefined,
+  textCase?: 'upper' | 'lower' | 'title' | 'none',
+): string | undefined {
+  if (!s) return s;
+  switch (textCase) {
+    case 'upper':
+      return s.toUpperCase();
+    case 'lower':
+      return s.toLowerCase();
+    case 'title':
+      return s.replace(/(^|\s)(\S)/g, (_, pre: string, ch: string) => pre + ch.toUpperCase());
+    default:
+      return s;
+  }
+}
+
+function buildFontStack(rawFont?: string): string {
+  const trimmed = rawFont?.trim();
+  if (!trimmed) return 'Inter, system-ui, sans-serif';
+  const hasGeneric = /\b(sans-serif|serif|monospace|cursive|fantasy|system-ui)\b/i.test(trimmed);
+  return hasGeneric ? trimmed : `"${trimmed.replace(/"/g, '')}", 'Inter', system-ui, sans-serif`;
+}
+
+function splitSpansByNewline(spans: TextSpan[]): TextSpan[][] {
+  const lines: TextSpan[][] = [[]];
+  for (const sp of spans) {
+    const parts = sp.text.split(/\r\n|\r|\n/);
+    parts.forEach((part, idx) => {
+      if (idx > 0) lines.push([]);
+      if (part.length > 0 || parts.length === 1) {
+        lines[lines.length - 1].push({ ...sp, text: part });
+      }
+    });
+  }
+  return lines;
+}
+
 export function Text({ node }: { node: TextNode }) {
   const registry = usePaintRegistry() ?? undefined;
   const ctx = { nodeId: node.id, registry };
+  useSyncExternalStore(
+    subscribeFontAvailability,
+    getFontAvailabilityVersion,
+    getFontAvailabilityVersion,
+  );
 
   const fontSize = node.fontSize ?? 14;
   const lineHeightRatio = node.lineHeight ?? 1.2;
-  // 文字ケース変換
-  const applyCase = (s: string | undefined): string | undefined => {
-    if (!s) return s;
-    switch (node.textCase) {
-      case 'upper': return s.toUpperCase();
-      case 'lower': return s.toLowerCase();
-      case 'title': return s.replace(/\b([a-z])/g, (_, ch) => ch.toUpperCase());
-      default: return s;
-    }
-  };
   const rawFont = node.fontFamily?.trim();
-  const hasGenericFallback =
-    rawFont != null && /\b(sans-serif|serif|monospace|cursive|fantasy|system-ui)\b/i.test(rawFont);
-  const fontFamily = rawFont
-    ? hasGenericFallback
-      ? rawFont
-      : `${rawFont}, 'Inter', system-ui, sans-serif`
-    : 'Inter, system-ui, sans-serif';
+  const fontFamily = buildFontStack(rawFont);
   const fontWeight = node.fontWeight ?? 'normal';
   const fill = resolveFill(node.fill, ctx);
-  // 改行解釈は flex.ts の intrinsic 計算と完全に合わせる(正規化を共有)
-  const lines = normalizeTextLines(node.content);
+  const resolvedFill = fill === 'none' ? '#111827' : fill;
+  const filterVal = resolveFilter(ctx);
+  const letterSpacing = node.letterSpacing ?? 0;
   const x = node.x ?? 0;
   const y = node.y ?? 0;
+
+  // Exact Figma glyph outlines: when .fig provided pre-shaped HarfBuzz glyph paths,
+  // render them directly for 1-to-1 fidelity across custom/missing fonts and SVG exports
+  // (cleared automatically in nodeOps.ts if the user edits text content).
+  const useGlyphFallback =
+    Array.isArray(node.glyphOutlines) &&
+    node.glyphOutlines.length > 0 &&
+    (node.glyphOutlines.length > 0 || !isFontFamilyAvailable(rawFont));
+
+  if (useGlyphFallback && node.glyphOutlines) {
+    const translate = x === 0 && y === 0 ? undefined : `translate(${x} ${y})`;
+    return (
+      <g transform={translate} filter={filterVal}>
+        {node.glyphOutlines.map((run, idx) => (
+          <path key={idx} d={run.d} fill={run.fill ?? resolvedFill} />
+        ))}
+      </g>
+    );
+  }
+
+  const lines = normalizeTextLines(node.content);
+  const hasSpans = Array.isArray(node.spans) && node.spans.length > 0;
 
   const isFixedWidth =
     node.textGrowth === 'fixed-width' || node.textGrowth === 'fixed-width-height';
@@ -78,23 +113,19 @@ export function Text({ node }: { node: TextNode }) {
     }
   }
 
-  const resolvedFill = fill === 'none' ? '#111827' : fill;
-  const filterVal = resolveFilter(ctx);
-  const letterSpacing = node.letterSpacing ?? 0;
+  const baseDecoration =
+    [node.underline ? 'underline' : '', node.strikethrough ? 'line-through' : '']
+      .filter(Boolean)
+      .join(' ') || undefined;
 
-  // fixed-width text with wrapping: use foreignObject for word wrap
   if (isFixedWidth && widthForAlign > 0) {
-    // height: レイアウト計算済みなら使う。未定なら十分な高さを確保
-    const resolvedHeight = typeof node.height === 'number' && node.height > 0
-      ? node.height
-      : undefined;
-    // フォールバック: 大きめに取って overflow:hidden で制御しない(fit_content)
+    const resolvedHeight =
+      typeof node.height === 'number' && node.height > 0 ? node.height : undefined;
     const fallbackHeight = Math.max(fontSize * lineHeightRatio * lines.length * 5, 200);
-    // textAlignVertical: fixed-width-height のときのみ上下整列が意味を持つ
-    // (fixed-width は height が内容で伸びるので top 相当)
     const hasFixedHeight = node.textGrowth === 'fixed-width-height' && resolvedHeight != null;
     const vAlign = hasFixedHeight ? node.textAlignVertical ?? 'top' : 'top';
     const flexAlign = vAlign === 'middle' ? 'center' : vAlign === 'bottom' ? 'flex-end' : 'flex-start';
+
     return (
       <foreignObject
         x={x}
@@ -131,23 +162,43 @@ export function Text({ node }: { node: TextNode }) {
               overflow: 'visible',
               margin: 0,
               padding: 0,
-              textDecoration: [
-                node.underline ? 'underline' : '',
-                node.strikethrough ? 'line-through' : '',
-              ]
-                .filter(Boolean)
-                .join(' ') || undefined,
+              textDecoration: baseDecoration,
               fontStyle: node.fontStyle ?? undefined,
             }}
           >
-            {applyCase(node.content) ?? ''}
+            {hasSpans
+              ? node.spans!.map((sp, idx) => {
+                  const spDec =
+                    [sp.underline ? 'underline' : '', sp.strikethrough ? 'line-through' : '']
+                      .filter(Boolean)
+                      .join(' ') || undefined;
+                  return (
+                    <span
+                      key={idx}
+                      style={{
+                        color: sp.fill ?? undefined,
+                        fontFamily: sp.fontFamily ? buildFontStack(sp.fontFamily) : undefined,
+                        fontWeight: sp.fontWeight ?? undefined,
+                        fontStyle: sp.fontStyle ?? undefined,
+                        fontSize: sp.fontSize ? `${sp.fontSize}px` : undefined,
+                        letterSpacing:
+                          sp.letterSpacing !== undefined ? `${sp.letterSpacing}px` : undefined,
+                        textDecoration: spDec,
+                      }}
+                    >
+                      {applyTextCase(sp.text, sp.textCase ?? node.textCase)}
+                    </span>
+                  );
+                })
+              : applyTextCase(node.content, node.textCase) ?? ''}
           </div>
         </div>
       </foreignObject>
     );
   }
 
-  // auto / fit-content text: simple SVG text
+  const spanLines = hasSpans ? splitSpansByNewline(node.spans!) : null;
+
   return (
     <text
       x={renderX}
@@ -162,26 +213,50 @@ export function Text({ node }: { node: TextNode }) {
       filter={filterVal}
       style={{
         whiteSpace: 'pre',
-        textDecoration: [
-          node.underline ? 'underline' : '',
-          node.strikethrough ? 'line-through' : '',
-        ]
-          .filter(Boolean)
-          .join(' ') || undefined,
+        textDecoration: baseDecoration,
         fontStyle: node.fontStyle ?? undefined,
       }}
     >
-      {lines.map((line, i) => {
-        // 段落区切り (空行) の後は paragraphSpacing を積む
-        const extra = i > 0 && (lines[i - 1] === '' || line === '')
-          ? (node.paragraphSpacing ?? 0)
-          : 0;
-        return (
-          <tspan key={i} x={renderX} dy={i === 0 ? 0 : fontSize * lineHeightRatio + extra}>
-            {applyCase(line || ' ')}
-          </tspan>
-        );
-      })}
+      {spanLines
+        ? spanLines.map((lineSpans, lineIdx) => {
+            const extra =
+              lineIdx > 0 && (spanLines[lineIdx - 1].length === 0 || lineSpans.length === 0)
+                ? (node.paragraphSpacing ?? 0)
+                : 0;
+            const dy = lineIdx === 0 ? 0 : fontSize * lineHeightRatio + extra;
+            if (lineSpans.length === 0) {
+              return (
+                <tspan key={lineIdx} x={renderX} dy={dy}>
+                  {' '}
+                </tspan>
+              );
+            }
+            return lineSpans.map((sp, spIdx) => (
+              <tspan
+                key={`${lineIdx}-${spIdx}`}
+                x={spIdx === 0 ? renderX : undefined}
+                dy={spIdx === 0 ? dy : undefined}
+                fill={sp.fill ?? undefined}
+                fontFamily={sp.fontFamily ? buildFontStack(sp.fontFamily) : undefined}
+                fontWeight={sp.fontWeight ?? undefined}
+                fontStyle={sp.fontStyle ?? undefined}
+                fontSize={sp.fontSize ?? undefined}
+              >
+                {applyTextCase(sp.text, sp.textCase ?? node.textCase)}
+              </tspan>
+            ));
+          })
+        : lines.map((line, i) => {
+            const extra =
+              i > 0 && (lines[i - 1] === '' || line === '')
+                ? (node.paragraphSpacing ?? 0)
+                : 0;
+            return (
+              <tspan key={i} x={renderX} dy={i === 0 ? 0 : fontSize * lineHeightRatio + extra}>
+                {applyTextCase(line || ' ', node.textCase)}
+              </tspan>
+            );
+          })}
     </text>
   );
 }

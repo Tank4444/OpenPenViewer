@@ -52,6 +52,13 @@ export interface FigPaint {
   blendMode?: string;
   stops?: FigColorStop[];
   transform?: FigMatrix;
+  image?: { hash?: unknown };
+  imageThumbnail?: { hash?: unknown };
+  imageScaleMode?: string;
+  scalingFactor?: number;
+  rotation?: number;
+  originalImageWidth?: number;
+  originalImageHeight?: number;
 }
 
 export interface FigEffect {
@@ -69,8 +76,45 @@ export interface FigFontName {
   postscript?: string;
 }
 
+export interface FigTextLine {
+  lineType?: string;
+  styleId?: number;
+  indentationLevel?: number;
+}
+
+export interface FigStyleOverride {
+  styleID?: number;
+  fontName?: FigFontName;
+  fontSize?: number;
+  fillPaints?: FigPaint[];
+  strokePaints?: FigPaint[];
+  strokeCap?: string;
+  strokeJoin?: string;
+  textDecoration?: string;
+  textCase?: string;
+  letterSpacing?: FigNumberWithUnit;
+}
+
 export interface FigTextData {
   characters?: string;
+  characterStyleIDs?: number[];
+  styleOverrideTable?: FigStyleOverride[];
+  lines?: FigTextLine[];
+}
+
+export interface FigDerivedGlyph {
+  commandsBlob?: number;
+  position?: FigVector;
+  fontSize?: number;
+  firstCharacter?: number;
+  advance?: number;
+  rotation?: number;
+  styleID?: number;
+}
+
+export interface FigDerivedTextData {
+  layoutSize?: FigVector;
+  glyphs?: FigDerivedGlyph[];
 }
 
 export interface FigNumberWithUnit {
@@ -78,9 +122,36 @@ export interface FigNumberWithUnit {
   units?: string;
 }
 
+export interface FigGeometryItem {
+  windingRule?: string;
+  commandsBlob?: number;
+  styleID?: number;
+}
+
 export interface FigVectorData {
   vectorNetworkBlob?: number;
   normalizedSize?: FigVector;
+  styleOverrideTable?: FigStyleOverride[];
+}
+
+export interface FigArcData {
+  startingAngle?: number;
+  endingAngle?: number;
+  innerRadius?: number;
+}
+
+export interface FigSymbolOverride extends Partial<FigNodeChange> {
+  guidPath?: { guids?: FigGuid[] };
+  overriddenSymbolID?: FigGuid;
+}
+
+export interface FigDerivedSymbolEntry {
+  guidPath?: { guids?: FigGuid[] };
+  size?: FigVector;
+  transform?: FigMatrix;
+  derivedTextData?: FigDerivedTextData;
+  fillGeometry?: FigGeometryItem[];
+  strokeGeometry?: FigGeometryItem[];
 }
 
 export interface FigBlob {
@@ -89,29 +160,48 @@ export interface FigBlob {
 
 export interface FigNodeChange {
   guid: FigGuid;
+  overrideKey?: FigGuid;
   phase?: string;
   parentIndex?: FigParentIndex;
   type?: string;
   name?: string;
   visible?: boolean;
   opacity?: number;
+  blendMode?: string;
+  mask?: boolean;
+  maskType?: string;
+  isStateGroup?: boolean;
+  isPageDivider?: boolean;
+  internalOnly?: boolean;
+  backgroundColor?: FigColor;
+  backgroundEnabled?: boolean;
   size?: FigVector;
   transform?: FigMatrix;
   cornerRadius?: number;
+  rectangleCornerRadiiIndependent?: boolean;
   rectangleTopLeftCornerRadius?: number;
   rectangleTopRightCornerRadius?: number;
   rectangleBottomRightCornerRadius?: number;
   rectangleBottomLeftCornerRadius?: number;
   fillPaints?: FigPaint[];
   strokePaints?: FigPaint[];
+  fillGeometry?: FigGeometryItem[];
+  strokeGeometry?: FigGeometryItem[];
   strokeWeight?: number;
+  borderStrokeWeightsIndependent?: boolean;
+  borderTopWeight?: number;
+  borderRightWeight?: number;
+  borderBottomWeight?: number;
+  borderLeftWeight?: number;
   strokeAlign?: string;
   strokeCap?: string;
   strokeJoin?: string;
   dashPattern?: number[];
   effects?: FigEffect[];
   clipsContent?: boolean;
+  frameMaskDisabled?: boolean;
   stackMode?: string;
+  stackWrap?: string;
   stackSpacing?: number;
   stackPadding?: number;
   stackHorizontalPadding?: number;
@@ -123,11 +213,25 @@ export interface FigNodeChange {
   fontSize?: number;
   fontName?: FigFontName;
   textData?: FigTextData;
+  derivedTextData?: FigDerivedTextData;
   textAlignHorizontal?: string;
+  textAlignVertical?: string;
+  textAutoResize?: string;
+  textDecoration?: string;
+  textCase?: string;
+  paragraphSpacing?: number;
   lineHeight?: FigNumberWithUnit;
   letterSpacing?: FigNumberWithUnit;
   count?: number;
+  starInnerScale?: number;
+  arcData?: FigArcData;
+  booleanOperation?: string;
   vectorData?: FigVectorData;
+  symbolData?: {
+    symbolID?: FigGuid;
+    symbolOverrides?: FigSymbolOverride[];
+  };
+  derivedSymbolData?: FigDerivedSymbolEntry[];
   stackPositioning?: string;
   [key: string]: unknown;
 }
@@ -347,6 +451,11 @@ export const FIGMA_KIWI_SCHEMA: Schema = parseSchema(`
     StackPositioning stackPositioning = 31;
     float stackPaddingRight = 32;
     float stackPaddingBottom = 33;
+    bool rectangleCornerRadiiIndependent = 34;
+    float rectangleTopLeftCornerRadius = 35;
+    float rectangleTopRightCornerRadius = 36;
+    float rectangleBottomRightCornerRadius = 37;
+    float rectangleBottomLeftCornerRadius = 38;
   }
 
   message Message {
