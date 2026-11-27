@@ -26,6 +26,9 @@ export type PaintRef = {
   kind: 'gradient' | 'image' | 'mesh';
   id: string;
   def: GradientFill | ImageFill | MeshGradientFill;
+  /** Target node dimensions (for aspect-ratio-correct image patterns) */
+  width?: number;
+  height?: number;
 };
 
 export type FilterRef = {
@@ -75,10 +78,14 @@ function walkNode(node: PenNode, registry: PaintRegistry): void {
       }
       if (f.type === 'gradient' || f.type === 'image' || f.type === 'mesh_gradient') {
         const id = `fill-${nodeId}-${i}`;
+        const nw = (node as { width?: unknown }).width;
+        const nh = (node as { height?: unknown }).height;
         registry.paints.push({
           kind: f.type === 'mesh_gradient' ? 'mesh' : f.type,
           id,
           def: f,
+          ...(typeof nw === 'number' && nw > 0 ? { width: nw } : {}),
+          ...(typeof nh === 'number' && nh > 0 ? { height: nh } : {}),
         });
         entries.push(id);
       } else {

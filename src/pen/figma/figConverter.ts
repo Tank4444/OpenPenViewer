@@ -3,6 +3,7 @@ import type {
   Fill,
   PenDocument,
   PenNode,
+  PenPage,
   Stroke,
 } from '../types';
 import {
@@ -17,6 +18,7 @@ import {
 } from './figKiwi';
 import { lookupLucideIcon } from '../renderer/lucideIcons';
 import {
+  commandsBlobToSvgPath,
   lucideToVectorNetworkBlob,
   svgPathToVectorNetworkBlob,
   vectorNetworkBlobToSvgPath,
@@ -85,7 +87,80 @@ export function hexToFigColor(colorStr: string | undefined, opacityOverride?: nu
   return fallback;
 }
 
-function figPaintsToPenFills(paints?: FigPaint[]): Fill[] | undefined {
+interface FigImportContext {
+  byId: Map<string, FigNodeChange>;
+  childrenMap: Map<string, FigNodeChange[]>;
+  blobs: FigBlob[];
+  images: Record<string, Uint8Array>;
+  imageUrlCache: Map<string, string>;
+}
+
+function hashToHex(hash: unknown): string | null {
+  if (!hash) return null;
+  if (hash instanceof Uint8Array) {
+    return Array.from(hash)
+      .map((b) => b.toString(16).padStart(2, '0'))
+      .join('');
+  }
+  if (typeof hash === 'object') {
+    const rec = hash as Record<string, unknown>;
+    const bytes: number[] = [];
+    for (let i = 0; i < 20; i++) {
+      const v = rec[String(i)];
+      if (typeof v !== 'number') return null;
+      bytes.push(v & 0xff);
+    }
+    return bytes.map((b) => b.toString(16).padStart(2, '0')).join('');
+  }
+  return null;
+}
+
+function detectImageMime(bytes: Uint8Array): string {
+  if (bytes.length >= 4 && bytes[0] === 0x89 && bytes[1] === 0x50 && bytes[2] === 0x4e && bytes[3] === 0x47) {
+    return 'image/png';
+  }
+  if (bytes.length >= 3 && bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff) {
+    return 'image/jpeg';
+  }
+  if (bytes.length >= 4 && bytes[0] === 0x47 && bytes[1] === 0x49 && bytes[2] === 0x46) {
+    return 'image/gif';
+  }
+  if (bytes.length >= 12 && bytes[0] === 0x52 && bytes[1] === 0x49 && bytes[8] === 0x57 && bytes[9] === 0x45) {
+    return 'image/webp';
+  }
+  return 'image/png';
+}
+
+function resolveImageUrl(paint: FigPaint, ctx?: FigImportContext): string | null {
+  if (!ctx) return null;
+  const p = paint as Record<string, unknown>;
+  const imgObj = p.image as { hash?: unknown } | undefined;
+  const thumbObj = p.imageThumbnail as { hash?: unknown } | undefined;
+  const hex = hashToHex(imgObj?.hash) ?? hashToHex(thumbObj?.hash);
+  if (!hex) return null;
+
+  const cached = ctx.imageUrlCache.get(hex);
+  if (cached) return cached;
+
+  const bytes = ctx.images[hex];
+  if (!bytes || bytes.byteLength === 0) return null;
+
+  const mime = detectImageMime(bytes);
+  let url: string;
+  if (typeof URL !== 'undefined' && typeof URL.createObjectURL === 'function' && typeof Blob !== 'undefined') {
+    const copy = new Uint8Array(bytes.byteLength);
+    copy.set(bytes);
+    url = URL.createObjectURL(new Blob([copy], { type: mime }));
+  } else {
+    let binary = '';
+    for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]);
+    url = `data:${mime};base64,${btoa(binary)}`;
+  }
+  ctx.imageUrlCache.set(hex, url);
+  return url;
+}
+
+function figPaintsToPenFills(paints?: FigPaint[], ctx?: FigImportContext): Fill[] | undefined {
   if (!paints || paints.length === 0) return undefined;
   const out: Fill[] = [];
   for (const p of paints) {
@@ -112,6 +187,19 @@ function figPaintsToPenFills(paints?: FigPaint[]): Fill[] | undefined {
         })),
         ...(p.opacity !== undefined && p.opacity < 1 ? { opacity: p.opacity } : {}),
       });
+    } else if (p.type === 'IMAGE') {
+      const url = resolveImageUrl(p, ctx);
+      if (url) {
+        const scaleMode = String((p as Record<string, unknown>).imageScaleMode ?? 'FILL').toUpperCase();
+        const mode: 'fill' | 'fit' | 'stretch' =
+          scaleMode === 'FIT' ? 'fit' : scaleMode === 'STRETCH' ? 'stretch' : 'fill';
+        out.push({
+          type: 'image',
+          url,
+          mode,
+          ...(p.opacity !== undefined && p.opacity < 1 ? { opacity: p.opacity } : {}),
+        });
+      }
     }
   }
   return out.length > 0 ? out : undefined;
@@ -400,18 +488,172 @@ function safeTextContent(v: unknown): string {
   return '';
 }
 
+function extractCornerRadius(nc: FigNodeChange): number | [number, number, number, number] | undefined {
+  const r = nc as unknown as Record<string, unknown>;
+  const tl = typeof r.rectangleTopLeftCornerRadius === 'number' ? r.rectangleTopLeftCornerRadius : undefined;
+  const tr = typeof r.rectangleTopRightCornerRadius === 'number' ? r.rectangleTopRightCornerRadius : undefined;
+  const br = typeof r.rectangleBottomRightCornerRadius === 'number' ? r.rectangleBottomRightCornerRadius : undefined;
+  const bl = typeof r.rectangleBottomLeftCornerRadius === 'number' ? r.rectangleBottomLeftCornerRadius : undefined;
+  if (tl !== undefined || tr !== undefined || br !== undefined || bl !== undefined) {
+    const a = tl ?? nc.cornerRadius ?? 0;
+    const b = tr ?? nc.cornerRadius ?? 0;
+    const c = br ?? nc.cornerRadius ?? 0;
+    const d = bl ?? nc.cornerRadius ?? 0;
+    if (a === b && b === c && c === d) return a > 0 ? a : undefined;
+    return [a, b, c, d];
+  }
+  return nc.cornerRadius ? nc.cornerRadius : undefined;
+}
+
+function extractFillGeometryPath(nc: FigNodeChange, blobs: FigBlob[]): string {
+  const r = nc as unknown as Record<string, unknown>;
+  const fillGeom = r.fillGeometry as Array<{ commandsBlob?: number }> | undefined;
+  if (Array.isArray(fillGeom) && fillGeom.length > 0) {
+    const parts: string[] = [];
+    for (const fg of fillGeom) {
+      if (typeof fg?.commandsBlob === 'number') {
+        const blob = blobs[fg.commandsBlob];
+        if (blob?.bytes) {
+          const d = commandsBlobToSvgPath(blob.bytes);
+          if (d) parts.push(d);
+        }
+      }
+    }
+    if (parts.length > 0) return parts.join(' ');
+  }
+  const blobIdx = nc.vectorData?.vectorNetworkBlob;
+  const blob = typeof blobIdx === 'number' ? blobs[blobIdx] : undefined;
+  return blob?.bytes ? vectorNetworkBlobToSvgPath(blob.bytes) : '';
+}
+
+function scaleSvgPath(d: string, sx: number, sy: number): string {
+  const f = (n: number) => Number(n.toFixed(2));
+  const tokens = d.match(/[a-zA-Z]|[-+]?\d*\.?\d+(?:[eE][-+]?\d+)?/g);
+  if (!tokens) return d;
+  const out: string[] = [];
+  let cmd = '';
+  let argIdx = 0;
+  for (const tok of tokens) {
+    if (/^[a-zA-Z]$/.test(tok)) {
+      cmd = tok;
+      argIdx = 0;
+      out.push(tok);
+      continue;
+    }
+    const num = Number(tok);
+    if (!Number.isFinite(num)) {
+      out.push(tok);
+      continue;
+    }
+    const upper = cmd.toUpperCase();
+    if (upper === 'H') {
+      out.push(String(f(num * sx)));
+    } else if (upper === 'V') {
+      out.push(String(f(num * sy)));
+    } else {
+      out.push(String(f(num * (argIdx % 2 === 0 ? sx : sy))));
+    }
+    argIdx++;
+  }
+  return out.join(' ');
+}
+
+function scalePenNodes(nodes: PenNode[], sx: number, sy: number): PenNode[] {
+  return nodes.map((n) => {
+    const rec = { ...(n as unknown as Record<string, unknown>) };
+    if (typeof rec.x === 'number') rec.x = rec.x * sx;
+    if (typeof rec.y === 'number') rec.y = rec.y * sy;
+    if (typeof rec.width === 'number') rec.width = rec.width * sx;
+    if (typeof rec.height === 'number') rec.height = rec.height * sy;
+    if (rec.type === 'path' && typeof rec.geometry === 'string') {
+      rec.geometry = scaleSvgPath(rec.geometry, sx, sy);
+    }
+    if (Array.isArray(rec.children)) {
+      rec.children = scalePenNodes(rec.children as PenNode[], sx, sy);
+    }
+    return rec as unknown as PenNode;
+  });
+}
+
+function collectInstanceOverrides(nc: FigNodeChange): Map<string, Partial<FigNodeChange>> {
+  const map = new Map<string, Partial<FigNodeChange>>();
+  const r = nc as unknown as Record<string, unknown>;
+  const symData = r.symbolData as { symbolOverrides?: Array<Record<string, unknown>> } | undefined;
+  const derived = r.derivedSymbolData as Array<Record<string, unknown>> | undefined;
+
+  const mergeList = (list?: Array<Record<string, unknown>>) => {
+    if (!Array.isArray(list)) return;
+    for (const ov of list) {
+      const gp = ov.guidPath as { guids?: FigGuid[] } | undefined;
+      const guids = gp?.guids;
+      if (!Array.isArray(guids) || guids.length === 0) continue;
+      const targetKey = guidKey(guids[guids.length - 1]);
+      const prev = map.get(targetKey) ?? {};
+      map.set(targetKey, { ...prev, ...(ov as Partial<FigNodeChange>) });
+    }
+  };
+  mergeList(derived);
+  mergeList(symData?.symbolOverrides);
+  return map;
+}
+
 function convertFigNodeToPen(
-  nc: FigNodeChange,
-  childrenMap: Map<string, FigNodeChange[]>,
-  blobs: FigBlob[] = [],
+  rawNc: FigNodeChange,
+  ctx: FigImportContext,
+  idPrefix = '',
+  overrides?: Map<string, Partial<FigNodeChange>>,
+  visitedSymbols: Set<string> = new Set(),
+  depth = 0,
 ): PenNode | null {
-  const id = guidKey(nc.guid);
-  const x = nc.transform?.m02 ?? 0;
-  const y = nc.transform?.m12 ?? 0;
+  if (depth > 28) return null;
+  if (rawNc.phase === 'REMOVED') return null;
+
+  const origId = guidKey(rawNc.guid);
+  const ov = overrides?.get(origId);
+  const nc: FigNodeChange = ov
+    ? {
+        ...rawNc,
+        ...ov,
+        guid: rawNc.guid,
+        type: rawNc.type,
+        size: ov.size ?? rawNc.size,
+        transform: ov.transform ?? rawNc.transform,
+      }
+    : rawNc;
+
+  const id = idPrefix ? `${idPrefix}__${origId}` : origId;
   const width = nc.size?.x ?? 0;
   const height = nc.size?.y ?? 0;
-  const fills = figPaintsToPenFills(nc.fillPaints);
-  const strokeFills = figPaintsToPenFills(nc.strokePaints);
+
+  // Extract position and rotation from Figma's 2x3 affine transform matrix
+  const m00 = nc.transform?.m00 ?? 1;
+  const m01 = nc.transform?.m01 ?? 0;
+  const m02 = nc.transform?.m02 ?? 0;
+  const m10 = nc.transform?.m10 ?? 0;
+  const m11 = nc.transform?.m11 ?? 1;
+  const m12 = nc.transform?.m12 ?? 0;
+  const det = m00 * m11 - m01 * m10;
+  const isFlipped = det < 0;
+  // For reflections (det < 0, e.g. horizontal flip m00=-1, m11=1), negate the X basis vector
+  // so a horizontal flip is not misinterpreted as a 180° rotation.
+  const rad = isFlipped ? Math.atan2(-m10, -m00) : Math.atan2(m10, m00);
+  const hasRotation = Math.abs(rad) > 1e-3 && width > 0 && height > 0;
+  let x = m02;
+  let y = m12;
+  let rotation: number | undefined;
+  if ((hasRotation || isFlipped) && width > 0 && height > 0) {
+    // Figma transforms around top-left (m02, m12); OpenPenViewer rotates around center (x + w/2, y + h/2)
+    const cx = m00 * (width / 2) + m01 * (height / 2) + m02;
+    const cy = m10 * (width / 2) + m11 * (height / 2) + m12;
+    x = cx - width / 2;
+    y = cy - height / 2;
+    if (hasRotation) {
+      rotation = Number(((-rad * 180) / Math.PI).toFixed(2));
+    }
+  }
+
+  const fills = figPaintsToPenFills(nc.fillPaints, ctx);
+  const strokeFills = figPaintsToPenFills(nc.strokePaints, ctx);
   const stroke: Stroke | undefined = strokeFills
     ? {
         fill: strokeFills,
@@ -425,32 +667,96 @@ function convertFigNodeToPen(
       }
     : undefined;
   const effects = figEffectsToPen(nc.effects);
+  const cornerRadius = extractCornerRadius(nc);
 
   const base = {
     id,
     name: nc.name,
     x,
     y,
+    ...(rotation !== undefined ? { rotation } : {}),
     ...(nc.visible === false ? { enabled: false } : {}),
     ...(nc.opacity !== undefined && nc.opacity < 1 ? { opacity: nc.opacity } : {}),
     ...(nc.stackPositioning === 'ABSOLUTE' ? { layoutPosition: 'absolute' as const } : {}),
   };
 
-  const childNodes = (childrenMap.get(id) ?? [])
-    .map((child) => convertFigNodeToPen(child, childrenMap, blobs))
+  let rawChildren = ctx.childrenMap.get(origId) ?? [];
+  let nextOverrides = overrides;
+  let nextVisited = visitedSymbols;
+  let nextPrefix = idPrefix;
+
+  // Expand Figma INSTANCE from its master SYMBOL when instance has no direct children
+  let instanceScaleX = 1;
+  let instanceScaleY = 1;
+  if (nc.type === 'INSTANCE' && rawChildren.length === 0) {
+    const symData = (nc as unknown as Record<string, unknown>).symbolData as
+      | { symbolID?: FigGuid }
+      | undefined;
+    const symKey = symData?.symbolID ? guidKey(symData.symbolID) : '';
+    if (symKey && !visitedSymbols.has(symKey)) {
+      const masterNode = ctx.byId.get(symKey);
+      const masterKids = ctx.childrenMap.get(symKey) ?? [];
+      if (masterKids.length > 0) {
+        rawChildren = masterKids;
+        nextVisited = new Set(visitedSymbols);
+        nextVisited.add(symKey);
+        nextPrefix = id;
+        const instOverrides = collectInstanceOverrides(nc);
+        if (instOverrides.size > 0) {
+          nextOverrides = overrides
+            ? new Map([...overrides, ...instOverrides])
+            : instOverrides;
+        }
+        const mw = masterNode?.size?.x ?? 0;
+        const mh = masterNode?.size?.y ?? 0;
+        if (mw > 0 && mh > 0 && width > 0 && height > 0) {
+          instanceScaleX = width / mw;
+          instanceScaleY = height / mh;
+        }
+      }
+    }
+  }
+
+  const rawChildNodes = rawChildren
+    .map((child) =>
+      convertFigNodeToPen(child, ctx, nextPrefix, nextOverrides, nextVisited, depth + 1),
+    )
     .filter((n): n is PenNode => n !== null);
+
+  // If INSTANCE size differs from master SYMBOL size, scale child coordinates & dimensions proportionally
+  const childNodes =
+    Math.abs(instanceScaleX - 1) > 0.01 || Math.abs(instanceScaleY - 1) > 0.01
+      ? scalePenNodes(rawChildNodes, instanceScaleX, instanceScaleY)
+      : rawChildNodes;
 
   switch (nc.type) {
     case 'FRAME':
     case 'COMPONENT':
     case 'SYMBOL':
-    case 'INSTANCE': {
+    case 'INSTANCE':
+    case 'SECTION': {
+      const rawFrame = nc as unknown as Record<string, unknown>;
+      const isWrapped = rawFrame.stackWrap === 'WRAP';
+      const hasComplexFlexChild = rawChildren.some((c) => {
+        const cr = c as unknown as Record<string, unknown>;
+        return (
+          (typeof cr.stackChildPrimaryGrow === 'number' && cr.stackChildPrimaryGrow > 0) ||
+          cr.stackChildAlignSelf === 'STRETCH'
+        );
+      });
+      // Preserve Figma's exact pre-computed child coordinates for wrapped or stretch-flex containers
       const layout =
-        nc.stackMode === 'HORIZONTAL'
-          ? 'horizontal'
-          : nc.stackMode === 'VERTICAL'
-            ? 'vertical'
-            : 'none';
+        nc.type === 'SECTION' || isWrapped || hasComplexFlexChild
+          ? 'none'
+          : nc.stackMode === 'HORIZONTAL'
+            ? 'horizontal'
+            : nc.stackMode === 'VERTICAL'
+              ? 'vertical'
+              : 'none';
+      const clip =
+        typeof rawFrame.frameMaskDisabled === 'boolean'
+          ? !rawFrame.frameMaskDisabled
+          : nc.clipsContent;
       const padLeft = nc.stackHorizontalPadding ?? nc.stackPadding ?? 0;
       const padTop = nc.stackVerticalPadding ?? nc.stackPadding ?? 0;
       const padRight = nc.stackPaddingRight ?? padLeft;
@@ -469,8 +775,12 @@ function convertFigNodeToPen(
         ...(fills ? { fill: fills.length === 1 ? fills[0] : fills } : {}),
         ...(stroke ? { stroke } : {}),
         ...(effects ? { effect: effects } : {}),
-        ...(nc.cornerRadius ? { cornerRadius: nc.cornerRadius } : {}),
-        ...(nc.clipsContent !== undefined ? { clip: nc.clipsContent } : {}),
+        ...(cornerRadius !== undefined
+          ? { cornerRadius }
+          : nc.type === 'SECTION'
+            ? { cornerRadius: 8 }
+            : {}),
+        ...(clip !== undefined ? { clip } : {}),
         layout,
         ...(nc.stackSpacing ? { gap: nc.stackSpacing } : {}),
         ...(padding ? { padding } : {}),
@@ -485,7 +795,6 @@ function convertFigNodeToPen(
     }
 
     case 'GROUP':
-    case 'BOOLEAN_OPERATION':
       return {
         ...base,
         type: 'group',
@@ -493,6 +802,29 @@ function convertFigNodeToPen(
         ...(height > 0 ? { height } : {}),
         children: childNodes,
       } as PenNode;
+
+    case 'BOOLEAN_OPERATION': {
+      const geometry = extractFillGeometryPath(nc, ctx.blobs);
+      if (geometry) {
+        return {
+          ...base,
+          type: 'path',
+          width,
+          height,
+          geometry,
+          ...(fills ? { fill: fills.length === 1 ? fills[0] : fills } : {}),
+          ...(stroke ? { stroke } : {}),
+          ...(effects ? { effect: effects } : {}),
+        } as PenNode;
+      }
+      return {
+        ...base,
+        type: 'group',
+        ...(width > 0 ? { width } : {}),
+        ...(height > 0 ? { height } : {}),
+        children: childNodes,
+      } as PenNode;
+    }
 
     case 'ELLIPSE':
       return {
@@ -530,27 +862,74 @@ function convertFigNodeToPen(
     case 'TEXT': {
       const textFill = fills?.[0];
       const weight = mapFigFontStyleToWeight(nc.fontName?.style);
+      const rawText = nc as unknown as Record<string, unknown>;
+      const autoResize = rawText.textAutoResize as string | undefined;
+      const textGrowth =
+        autoResize === 'WIDTH_AND_HEIGHT'
+          ? 'auto'
+          : autoResize === 'HEIGHT'
+            ? 'fixed-width'
+            : autoResize === 'NONE'
+              ? 'fixed-width-height'
+              : undefined;
+      const fontSize = nc.fontSize ?? 16;
+      const lhObj = rawText.lineHeight as { value?: number; units?: string } | undefined;
+      let lineHeight: number | undefined;
+      if (lhObj && typeof lhObj.value === 'number' && Number.isFinite(lhObj.value) && lhObj.value > 0) {
+        if (lhObj.units === 'PIXELS') lineHeight = Number((lhObj.value / fontSize).toFixed(3));
+        else if (lhObj.units === 'PERCENT') lineHeight = Number((lhObj.value / 100).toFixed(3));
+        else if (lhObj.units === 'RAW') lineHeight = lhObj.value;
+      }
+      const lsObj = rawText.letterSpacing as { value?: number; units?: string } | undefined;
+      let letterSpacing: number | undefined;
+      if (lsObj && typeof lsObj.value === 'number' && Number.isFinite(lsObj.value) && lsObj.value !== 0) {
+        letterSpacing =
+          lsObj.units === 'PERCENT'
+            ? Number(((lsObj.value / 100) * fontSize).toFixed(2))
+            : lsObj.value;
+      }
+      const rawCase = rawText.textCase as string | undefined;
+      const textCase =
+        rawCase === 'UPPER'
+          ? 'upper'
+          : rawCase === 'LOWER'
+            ? 'lower'
+            : rawCase === 'TITLE'
+              ? 'title'
+              : undefined;
+      const rawVAlign = rawText.textAlignVertical as string | undefined;
+      const textAlignVertical =
+        rawVAlign === 'CENTER'
+          ? 'middle'
+          : rawVAlign === 'BOTTOM'
+            ? 'bottom'
+            : rawVAlign === 'TOP'
+              ? 'top'
+              : undefined;
       return {
         ...base,
         type: 'text',
         width,
         height,
         content: nc.textData?.characters ?? nc.name ?? '',
-        fontSize: nc.fontSize ?? 16,
+        fontSize,
         ...(nc.fontName?.family ? { fontFamily: nc.fontName.family } : {}),
         ...(weight ? { fontWeight: weight } : {}),
+        ...(lineHeight !== undefined ? { lineHeight } : {}),
+        ...(letterSpacing !== undefined ? { letterSpacing } : {}),
+        ...(textGrowth ? { textGrowth } : {}),
+        ...(textCase ? { textCase } : {}),
         ...(nc.textAlignHorizontal
           ? { textAlign: nc.textAlignHorizontal.toLowerCase() }
           : {}),
+        ...(textAlignVertical ? { textAlignVertical } : {}),
         ...(textFill ? { fill: textFill } : {}),
         ...(effects ? { effect: effects } : {}),
       } as PenNode;
     }
 
     case 'VECTOR': {
-      const blobIdx = nc.vectorData?.vectorNetworkBlob;
-      const blob = typeof blobIdx === 'number' ? blobs[blobIdx] : undefined;
-      const geometry = blob?.bytes ? vectorNetworkBlobToSvgPath(blob.bytes) : '';
+      const geometry = extractFillGeometryPath(nc, ctx.blobs);
       if (geometry) {
         return {
           ...base,
@@ -568,7 +947,7 @@ function convertFigNodeToPen(
         type: 'rectangle',
         width,
         height,
-        ...(nc.cornerRadius ? { cornerRadius: nc.cornerRadius } : {}),
+        ...(cornerRadius !== undefined ? { cornerRadius } : {}),
         ...(fills ? { fill: fills.length === 1 ? fills[0] : fills } : {}),
         ...(stroke ? { stroke } : {}),
         ...(effects ? { effect: effects } : {}),
@@ -583,7 +962,7 @@ function convertFigNodeToPen(
         type: 'rectangle',
         width,
         height,
-        ...(nc.cornerRadius ? { cornerRadius: nc.cornerRadius } : {}),
+        ...(cornerRadius !== undefined ? { cornerRadius } : {}),
         ...(fills ? { fill: fills.length === 1 ? fills[0] : fills } : {}),
         ...(stroke ? { stroke } : {}),
         ...(effects ? { effect: effects } : {}),
@@ -621,25 +1000,60 @@ export function figToPen(input: ArrayBuffer | Uint8Array): PenDocument {
     });
   }
 
-  const canvases = nodeChanges.filter((nc) => nc.type === 'CANVAS');
-  const rootNodes: PenNode[] = [];
+  const ctx: FigImportContext = {
+    byId,
+    childrenMap,
+    blobs,
+    images: parsed.images ?? {},
+    imageUrlCache: new Map(),
+  };
 
-  if (canvases.length > 0) {
-    const firstCanvas = canvases[0];
-    const topNodes = childrenMap.get(guidKey(firstCanvas.guid)) ?? [];
-    for (const nc of topNodes) {
-      const converted = convertFigNodeToPen(nc, childrenMap, blobs);
-      if (converted) rootNodes.push(converted);
+  const allCanvases = nodeChanges.filter((nc) => nc.type === 'CANVAS');
+  const visibleCanvases = allCanvases.filter((c) => {
+    const rec = c as unknown as Record<string, unknown>;
+    if (rec.internalOnly === true) return false;
+    const kids = childrenMap.get(guidKey(c.guid)) ?? [];
+    const name = (c.name ?? '').trim();
+    if (!name && kids.length === 0) return false;
+    return true;
+  });
+
+  if (visibleCanvases.length > 0) {
+    const pages: PenPage[] = visibleCanvases.map((canvas, idx) => {
+      const cid = guidKey(canvas.guid);
+      const topNodes = childrenMap.get(cid) ?? [];
+      const children = topNodes
+        .map((nc) => convertFigNodeToPen(nc, ctx))
+        .filter((n): n is PenNode => n !== null);
+      return {
+        id: cid,
+        name: (canvas.name ?? '').trim() || `Page ${idx + 1}`,
+        children,
+      };
+    });
+
+    const activePage = pages.find((p) => p.children.length > 0) ?? pages[0];
+    if (pages.length > 1) {
+      return {
+        version: '1.0',
+        children: activePage.children,
+        pages,
+        activePageId: activePage.id,
+      };
     }
-  } else {
-    // Fallback: nodes without a known parent
-    for (const nc of nodeChanges) {
-      if (nc.type === 'DOCUMENT') continue;
-      const pKey = nc.parentIndex?.guid ? guidKey(nc.parentIndex.guid) : '';
-      if (!pKey || !byId.has(pKey)) {
-        const converted = convertFigNodeToPen(nc, childrenMap, blobs);
-        if (converted) rootNodes.push(converted);
-      }
+    return {
+      version: '1.0',
+      children: activePage.children,
+    };
+  }
+
+  const rootNodes: PenNode[] = [];
+  for (const nc of nodeChanges) {
+    if (nc.type === 'DOCUMENT') continue;
+    const pKey = nc.parentIndex?.guid ? guidKey(nc.parentIndex.guid) : '';
+    if (!pKey || !byId.has(pKey)) {
+      const converted = convertFigNodeToPen(nc, ctx);
+      if (converted) rootNodes.push(converted);
     }
   }
 

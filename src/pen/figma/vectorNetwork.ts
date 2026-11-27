@@ -661,3 +661,52 @@ export function vectorNetworkBlobToSvgPath(bytes: Uint8Array): string {
   return parts.join(' ');
 }
 
+
+/**
+ * Decode Figma's binary `commandsBlob` (used in `fillGeometry` / `strokeGeometry`)
+ * into an SVG path `d` string.
+ * Opcodes: 0 = Z, 1 = M (2 f32), 2 = L (2 f32), 3 = Q (4 f32), 4 = C (6 f32).
+ */
+export function commandsBlobToSvgPath(bytes: Uint8Array): string {
+  if (!bytes || bytes.byteLength === 0) return '';
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  let off = 0;
+  const parts: string[] = [];
+  const f = (n: number) => (Number.isFinite(n) ? Number(n.toFixed(2)) : 0);
+
+  while (off < bytes.byteLength) {
+    const cmd = view.getUint8(off++);
+    switch (cmd) {
+      case 0:
+        parts.push('Z');
+        break;
+      case 1:
+        if (off + 8 > bytes.byteLength) return parts.join(' ');
+        parts.push(`M ${f(view.getFloat32(off, true))} ${f(view.getFloat32(off + 4, true))}`);
+        off += 8;
+        break;
+      case 2:
+        if (off + 8 > bytes.byteLength) return parts.join(' ');
+        parts.push(`L ${f(view.getFloat32(off, true))} ${f(view.getFloat32(off + 4, true))}`);
+        off += 8;
+        break;
+      case 3:
+        if (off + 16 > bytes.byteLength) return parts.join(' ');
+        parts.push(
+          `Q ${f(view.getFloat32(off, true))} ${f(view.getFloat32(off + 4, true))} ${f(view.getFloat32(off + 8, true))} ${f(view.getFloat32(off + 12, true))}`,
+        );
+        off += 16;
+        break;
+      case 4:
+        if (off + 24 > bytes.byteLength) return parts.join(' ');
+        parts.push(
+          `C ${f(view.getFloat32(off, true))} ${f(view.getFloat32(off + 4, true))} ${f(view.getFloat32(off + 8, true))} ${f(view.getFloat32(off + 12, true))} ${f(view.getFloat32(off + 16, true))} ${f(view.getFloat32(off + 20, true))}`,
+        );
+        off += 24;
+        break;
+      default:
+        return parts.join(' ');
+    }
+  }
+  return parts.join(' ');
+}

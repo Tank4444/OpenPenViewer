@@ -6244,3 +6244,41 @@ html,
 .mcp-switch--on .mcp-switch__thumb {
   transform: translateX(18px);
 }
+
+/* Loading Screen with Spinner */
+.loading-screen {
+  flex: 1;
+  width: 100%;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 14px;
+  background: var(--color-bg);
+  color: var(--color-text-muted);
+}
+
+.loading-screen__spinner {
+  width: 32px;
+  height: 32px;
+  border-radius: 999px;
+  border: 3px solid var(--color-border);
+  border-top-color: var(--color-accent);
+  animation: loading-spin 0.75s linear infinite;
+}
+
+.loading-screen__text {
+  font-size: 13.5px;
+}
+
+.loading-screen__text strong {
+  color: var(--color-text);
+  font-weight: 600;
+}
+
+@keyframes loading-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}

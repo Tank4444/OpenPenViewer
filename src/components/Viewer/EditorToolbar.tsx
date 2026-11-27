@@ -7,6 +7,7 @@ import { GridSnapToggle } from './GridSnapToggle';
 import { ExportButton } from './ExportButton';
 import { CollabBar } from './CollabBar';
 import { McpBar } from './McpBar';
+import { MissingFontsBadge } from './MissingFontsBadge';
 import type { CollabState } from '../../collab/useCollab';
 import type { BridgeState } from '../../collab/useBridge';
 import { isAIGenerateEnabled } from '../../utils/aiGenerate';
@@ -220,6 +221,7 @@ export const EditorToolbar = memo(function EditorToolbar({
         onDisconnect={onDisconnectBridge}
         onChangeUrl={onChangeBridgeUrl}
       />
+      <MissingFontsBadge />
       <span className="viewer__separator" />
       <ExportButton />
       {onToggleTheme && (

@@ -7,6 +7,7 @@ import type { PenDocument, PenNode, FrameNode, NamedStyle, ColorStyle, TextStyle
 import { booleanOperation, type BoolOp } from '../renderer/booleanOps';
 import { flattenToPath, outlineStroke } from '../renderer/flatten';
 import { findNode, findParentChain, updateNodeInDoc } from './nodeOps';
+import { computeViewBox } from '../renderer/viewBox';
 import { useEditorShortcuts } from './useEditorShortcuts';
 import { savePenContent } from '../../platform/hostBridge';
 
@@ -62,6 +63,8 @@ interface EditorContextValue {
   deleteNode: (nodeId: string) => void;
   /** ドキュメントの children を直接差し替える（undo 付き） */
   replaceDocChildren: (children: PenNode[]) => void;
+  /** Switch active page in multi-page documents (e.g. Figma .fig) */
+  switchPage: (pageId: string) => void;
   /** 選択ノードの z-order を移動（forward/backward/front/back） */
   reorderSelected: (action: 'forward' | 'backward' | 'front' | 'back') => void;
   /** 親配下の兄弟配列の並びを from → to に変更（レイヤーDnD用） */
@@ -1009,6 +1012,46 @@ export function EditorProvider({
     [state.doc, state.selectedNodeId],
   );
 
+  const switchPage = useCallback((pageId: string) => {
+    setState((s) => {
+      const pages = s.rawDoc.pages;
+      if (!pages || pages.length === 0) return s;
+      const target = pages.find((p) => p.id === pageId);
+      if (!target || s.rawDoc.activePageId === pageId) return s;
+
+      const updatedPages = pages.map((p) =>
+        p.id === s.rawDoc.activePageId ? { ...p, children: s.rawDoc.children } : p,
+      );
+      const nextRawDoc: PenDocument = {
+        ...s.rawDoc,
+        pages: updatedPages,
+        activePageId: pageId,
+        children: target.children,
+      };
+      const nextDoc: PenDocument = {
+        ...s.doc,
+        pages: updatedPages,
+        activePageId: pageId,
+        children: target.children,
+      };
+
+      const vb = computeViewBox(nextDoc);
+      requestAnimationFrame(() => {
+        window.dispatchEvent(new CustomEvent('pencil-collab-fit', { detail: vb }));
+      });
+
+      return {
+        ...s,
+        doc: nextDoc,
+        rawDoc: nextRawDoc,
+        selectedNodeId: null,
+        selectedNodeIds: new Set(),
+        editingNodeId: null,
+        editingPathId: null,
+      };
+    });
+  }, []);
+
   const exportPen = useCallback((fileName?: string) => {
     // rawDoc を使用（レイアウト計算前の元データ + 編集差分）
     const json = JSON.stringify(state.rawDoc, null, 2);
@@ -1019,8 +1062,8 @@ export function EditorProvider({
   const canRedo = redoStack.current.length > 0;
 
   const actions = useMemo(
-    () => ({ selectNode, selectMultiple, toggleSelectNode, enterInsertMode, exitInsertMode, updateNode, updateNodeSilent, updateManySilent, pushUndoCheckpoint, deleteNode, replaceDocChildren, reorderSelected, reorderChildren, addNode, cloneNodesAtTop, createComponent, unmakeComponent, insertInstance, upsertVariable, removeVariable, renameVariable, setGridSnap, setGridSize, wrapSelectionInFrame, toggleMaskSelected, applyBooleanOp, upsertStyle, removeStyle, applyStyleToSelection, flattenSelection, outlineStrokeSelected, addComment, updateComment, removeComment, detachFromParentIfOutside, setActiveTool, beginEditing, endEditing, beginPathEditing, endPathEditing, exportPen, undo, redo }),
-    [selectNode, selectMultiple, toggleSelectNode, enterInsertMode, exitInsertMode, updateNode, updateNodeSilent, updateManySilent, pushUndoCheckpoint, deleteNode, replaceDocChildren, reorderSelected, reorderChildren, addNode, cloneNodesAtTop, createComponent, unmakeComponent, insertInstance, upsertVariable, removeVariable, renameVariable, setGridSnap, setGridSize, wrapSelectionInFrame, toggleMaskSelected, applyBooleanOp, upsertStyle, removeStyle, applyStyleToSelection, flattenSelection, outlineStrokeSelected, addComment, updateComment, removeComment, detachFromParentIfOutside, setActiveTool, beginEditing, endEditing, beginPathEditing, endPathEditing, exportPen, undo, redo],
+    () => ({ selectNode, selectMultiple, toggleSelectNode, enterInsertMode, exitInsertMode, updateNode, updateNodeSilent, updateManySilent, pushUndoCheckpoint, deleteNode, replaceDocChildren, switchPage, reorderSelected, reorderChildren, addNode, cloneNodesAtTop, createComponent, unmakeComponent, insertInstance, upsertVariable, removeVariable, renameVariable, setGridSnap, setGridSize, wrapSelectionInFrame, toggleMaskSelected, applyBooleanOp, upsertStyle, removeStyle, applyStyleToSelection, flattenSelection, outlineStrokeSelected, addComment, updateComment, removeComment, detachFromParentIfOutside, setActiveTool, beginEditing, endEditing, beginPathEditing, endPathEditing, exportPen, undo, redo }),
+    [selectNode, selectMultiple, toggleSelectNode, enterInsertMode, exitInsertMode, updateNode, updateNodeSilent, updateManySilent, pushUndoCheckpoint, deleteNode, replaceDocChildren, switchPage, reorderSelected, reorderChildren, addNode, cloneNodesAtTop, createComponent, unmakeComponent, insertInstance, upsertVariable, removeVariable, renameVariable, setGridSnap, setGridSize, wrapSelectionInFrame, toggleMaskSelected, applyBooleanOp, upsertStyle, removeStyle, applyStyleToSelection, flattenSelection, outlineStrokeSelected, addComment, updateComment, removeComment, detachFromParentIfOutside, setActiveTool, beginEditing, endEditing, beginPathEditing, endPathEditing, exportPen, undo, redo],
   );
 
   const value = useMemo(

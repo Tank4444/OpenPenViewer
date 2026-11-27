@@ -89,31 +89,59 @@ async function captureCanvasPng(
 
   const clone = svg.cloneNode(true) as SVGSVGElement;
   clone.setAttribute('xmlns', 'http://www.w3.org/2000/svg');
+  clone.setAttribute('xmlns:xlink', 'http://www.w3.org/1999/xlink');
   clone.setAttribute('viewBox', `${vx} ${vy} ${vw} ${vh}`);
   clone.setAttribute('width', String(outW));
   clone.setAttribute('height', String(outH));
 
-  const svgStr = new XMLSerializer().serializeToString(clone);
-  const blob = new Blob([svgStr], { type: 'image/svg+xml;charset=utf-8' });
-  const blobUrl = URL.createObjectURL(blob);
+  // Inline blob: (and non-data:) <image> hrefs as data: URLs so canvas.toDataURL() is not tainted
+  const images = Array.from(clone.querySelectorAll('image'));
+  const dataUrlCache = new Map<string, string>();
+  await Promise.all(
+    images.map(async (imgEl) => {
+      const href = imgEl.getAttribute('href') || imgEl.getAttribute('xlink:href') || '';
+      if (!href || href.startsWith('data:')) return;
+      try {
+        let dataUrl = dataUrlCache.get(href);
+        if (!dataUrl) {
+          const resp = await fetch(href);
+          const b = await resp.blob();
+          dataUrl = await new Promise<string>((resolve, reject) => {
+            const reader = new FileReader();
+            reader.onload = () => resolve(String(reader.result));
+            reader.onerror = () => reject(new Error('FileReader failed'));
+            reader.readAsDataURL(b);
+          });
+          dataUrlCache.set(href, dataUrl);
+        }
+        imgEl.setAttribute('href', dataUrl);
+        if (imgEl.hasAttribute('xlink:href')) {
+          imgEl.setAttribute('xlink:href', dataUrl);
+        }
+      } catch {
+        // Remove unreachable external image so it doesn't taint the canvas
+        imgEl.removeAttribute('href');
+        imgEl.removeAttribute('xlink:href');
+      }
+    }),
+  );
 
-  try {
-    const img = await new Promise<HTMLImageElement>((resolve, reject) => {
-      const image = new Image();
-      image.onload = () => resolve(image);
-      image.onerror = () => reject(new Error('Failed to rasterize SVG'));
-      image.src = blobUrl;
-    });
-    const canvas = document.createElement('canvas');
-    canvas.width = outW;
-    canvas.height = outH;
-    const ctx = canvas.getContext('2d');
-    if (!ctx) throw new Error('Canvas 2D context unavailable');
-    ctx.drawImage(img, 0, 0, outW, outH);
-    return { dataUrl: canvas.toDataURL('image/png'), width: outW, height: outH };
-  } finally {
-    URL.revokeObjectURL(blobUrl);
-  }
+  const svgStr = new XMLSerializer().serializeToString(clone);
+  const svgDataUrl = `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svgStr)}`;
+
+  const img = await new Promise<HTMLImageElement>((resolve, reject) => {
+    const image = new Image();
+    image.onload = () => resolve(image);
+    image.onerror = () => reject(new Error('Failed to rasterize SVG'));
+    image.src = svgDataUrl;
+  });
+  const canvas = document.createElement('canvas');
+  canvas.width = outW;
+  canvas.height = outH;
+  const ctx = canvas.getContext('2d');
+  if (!ctx) throw new Error('Canvas 2D context unavailable');
+  ctx.drawImage(img, 0, 0, outW, outH);
+  return { dataUrl: canvas.toDataURL('image/png'), width: outW, height: outH };
 }
 
 export function useBridge() {

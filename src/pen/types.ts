@@ -429,9 +429,19 @@ export interface EffectStyle {
 }
 export type NamedStyle = ColorStyle | TextStyle | EffectStyle;
 
+export interface PenPage {
+  id: string;
+  name: string;
+  children: PenNode[];
+  background?: string;
+}
+
 export interface PenDocument {
   version: string;
   children: PenNode[];
+  /** Multi-page documents (e.g. Figma .fig imports with multiple CANVAS pages) */
+  pages?: PenPage[];
+  activePageId?: string;
   /** 将来フェーズで詳細化。MVP では通すだけ。 */
   themes?: unknown;
   variables?: unknown;

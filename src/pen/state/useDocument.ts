@@ -97,13 +97,23 @@ export function useDocument(): {
       const id = startRequest();
       dispatch({ type: 'LOAD_START', source });
       try {
-        const text = file.name.toLowerCase().endsWith('.fig')
-          ? await (async () => {
-              const { figToPen } = await import('../figma/figConverter');
-              const buf = await file.arrayBuffer();
-              return JSON.stringify(figToPen(buf));
-            })()
-          : await readFileAsText(file);
+        if (file.name.toLowerCase().endsWith('.fig')) {
+          // Yield a frame so the loading spinner paints before heavy binary decoding
+          await new Promise((r) => setTimeout(r, 16));
+          if (!isCurrent(id)) return;
+          const [{ figToPen }, buf] = await Promise.all([
+            import('../figma/figConverter'),
+            file.arrayBuffer(),
+          ]);
+          if (!isCurrent(id)) return;
+          const rawDoc = figToPen(buf);
+          if (!isCurrent(id)) return;
+          const laidOut = layoutDocument(rawDoc);
+          loadDocumentFonts(laidOut);
+          dispatch({ type: 'LOAD_SUCCESS', source, doc: laidOut, rawDoc });
+          return;
+        }
+        const text = await readFileAsText(file);
         await loadText(id, source, text);
       } catch (e) {
         if (!isCurrent(id)) return;

@@ -557,16 +557,22 @@ export function App() {
         )}
 
         {!showDocs && !showVision && state.status === 'loading' && (
-          <p className="muted">
-            {t('loading')}{' '}
-            {state.source.kind === 'file'
-              ? state.source.name
-              : state.source.kind === 'url'
-                ? state.source.url
-                : state.source.kind === 'sample'
-                  ? `samples/${state.source.name}`
-                  : ''}
-          </p>
+          <div className="loading-screen">
+            <div className="loading-screen__spinner" aria-hidden="true" />
+            <div className="loading-screen__text">
+              Открытие{' '}
+              <strong>
+                {state.source.kind === 'file'
+                  ? state.source.name
+                  : state.source.kind === 'url'
+                    ? state.source.url
+                    : state.source.kind === 'sample'
+                      ? state.source.name
+                      : 'файла'}
+              </strong>
+              …
+            </div>
+          </div>
         )}
 
         {!showDocs && !showVision && state.status === 'error' && (

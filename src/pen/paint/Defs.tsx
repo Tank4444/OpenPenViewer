@@ -22,7 +22,9 @@ function sanitizeImageUrl(url: string): string | null {
   if (/^data:image\/[a-z+]+;base64,/i.test(url)) return url;
   try {
     const parsed = new URL(url);
-    if (parsed.protocol === 'https:' || parsed.protocol === 'http:') return url;
+    if (parsed.protocol === 'https:' || parsed.protocol === 'http:' || parsed.protocol === 'blob:') {
+      return url;
+    }
   } catch {
     // invalid URL
   }
@@ -45,11 +47,35 @@ function renderPaint(p: PaintRef) {
     : def.mode === 'fit'
     ? 'xMidYMid meet'
     : 'xMidYMid slice'; // fill or undefined
+  const hasSize = typeof p.width === 'number' && p.width > 0 && typeof p.height === 'number' && p.height > 0;
+  if (hasSize) {
+    return (
+      <pattern
+        key={p.id}
+        id={p.id}
+        patternUnits="objectBoundingBox"
+        width={1}
+        height={1}
+        viewBox={`0 0 ${p.width} ${p.height}`}
+        preserveAspectRatio="none"
+      >
+        <image
+          href={safeUrl}
+          x={0}
+          y={0}
+          width={p.width}
+          height={p.height}
+          preserveAspectRatio={preserve}
+        />
+      </pattern>
+    );
+  }
   return (
     <pattern
       key={p.id}
       id={p.id}
       patternUnits="objectBoundingBox"
+      patternContentUnits="objectBoundingBox"
       width={1}
       height={1}
     >

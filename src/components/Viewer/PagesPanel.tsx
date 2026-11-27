@@ -46,7 +46,9 @@ const TRASH_ICON = (
 );
 
 export const PagesPanel = memo(function PagesPanel({ collapsed, onTogglePanel, onZoomToPage }: PagesPanelProps) {
-  const { state, selectNode, addNode, updateNode, deleteNode, reorderChildren } = useEditor();
+  const { state, selectNode, addNode, updateNode, deleteNode, reorderChildren, switchPage } = useEditor();
+  const docPages = state.doc.pages;
+  const hasDocPages = Array.isArray(docPages) && docPages.length > 0;
   const pages = state.doc.children.filter(isFramePage);
   const [renameId, setRenameId] = useState<string | null>(null);
   const [renameValue, setRenameValue] = useState('');
@@ -99,6 +101,40 @@ export const PagesPanel = memo(function PagesPanel({ collapsed, onTogglePanel, o
         <button className="pages-panel__toggle-btn" onClick={onTogglePanel} title="Show Pages">
           {PAGE_ICON}
         </button>
+      </div>
+    );
+  }
+
+  if (hasDocPages) {
+    return (
+      <div className="pages-panel">
+        <div className="pages-panel__header">
+          <span>Pages</span>
+          <span className="pages-panel__count">{docPages.length}</span>
+          {onTogglePanel && (
+            <button className="pages-panel__icon-btn" onClick={onTogglePanel} title="Hide Pages">
+              ✕
+            </button>
+          )}
+        </div>
+        <div className="pages-panel__list">
+          {docPages.map((pg) => {
+            const active = state.doc.activePageId === pg.id;
+            return (
+              <div
+                key={pg.id}
+                className={`pages-panel__item${active ? ' pages-panel__item--active' : ''}`}
+                onClick={() => switchPage(pg.id)}
+              >
+                <span className="pages-panel__item-icon">{PAGE_ICON}</span>
+                <span className="pages-panel__item-name" title={pg.name}>
+                  {pg.name}
+                </span>
+                <div className="pages-panel__item-size">{pg.children.length}</div>
+              </div>
+            );
+          })}
+        </div>
       </div>
     );
   }

@@ -40,7 +40,14 @@ export function Text({ node }: { node: TextNode }) {
       default: return s;
     }
   };
-  const fontFamily = node.fontFamily ?? 'Inter, system-ui, sans-serif';
+  const rawFont = node.fontFamily?.trim();
+  const hasGenericFallback =
+    rawFont != null && /\b(sans-serif|serif|monospace|cursive|fantasy|system-ui)\b/i.test(rawFont);
+  const fontFamily = rawFont
+    ? hasGenericFallback
+      ? rawFont
+      : `${rawFont}, 'Inter', system-ui, sans-serif`
+    : 'Inter, system-ui, sans-serif';
   const fontWeight = node.fontWeight ?? 'normal';
   const fill = resolveFill(node.fill, ctx);
   // 改行解釈は flex.ts の intrinsic 計算と完全に合わせる(正規化を共有)
@@ -94,6 +101,7 @@ export function Text({ node }: { node: TextNode }) {
         y={y}
         width={widthForAlign}
         height={resolvedHeight ?? fallbackHeight}
+        overflow="visible"
         filter={filterVal}
       >
         <div
