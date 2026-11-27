@@ -106,7 +106,7 @@ describe('useCollab — 接続ライフサイクル', () => {
 
     await flushDynamicImport();
 
-    expect(roomId).toMatch(/^[a-z0-9]{8}$/);
+    expect(roomId).toMatch(/^[a-z0-9]{4}$/);
     expect(result.current.collab.connected).toBe(true);
     expect(result.current.collab.roomId).toBe(roomId);
   });
@@ -351,7 +351,7 @@ describe('useCollab — 招待リンク', () => {
     const { result } = renderHook(() => useCollab());
     await act(async () => { result.current.joinRoom('abcd1234', doc([])); });
     await flushDynamicImport();
-    expect(result.current.getRoomUrl()).toContain('room=abcd1234');
+    expect(result.current.getRoomUrl()).toContain('code=abcd1234');
   });
 
   it('src / id クエリは招待リンクから取り除く', async () => {
@@ -362,7 +362,7 @@ describe('useCollab — 招待リンク', () => {
     await flushDynamicImport();
 
     const url = result.current.getRoomUrl();
-    expect(url).toContain('room=abcd1234');
+    expect(url).toContain('code=abcd1234');
     expect(url).not.toContain('src=');
     expect(url).not.toContain('id=');
   });

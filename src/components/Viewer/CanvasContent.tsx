@@ -1,19 +1,17 @@
 /**
- * SVG 内のコンテンツ描画。EditorContext の rawDoc を使い、毎レンダリングで
- * ref 展開 / 変数置換 / flex レイアウトを再計算してリアルタイム反映する。
+ * SVG 内のコンテンツ描画。EditorContext の rawDoc を使い、
+ * トップレベル単位の WeakMap キャッシュで変更のあった画面だけ再レイアウトする。
  * 背景クリックでノード選択解除。
  */
 
 import { memo, useMemo, useState, useSyncExternalStore } from 'react';
 import { getTextMetricsVersion, subscribeTextMetrics } from '../../pen/layout/textMeasure';
+import { IncrementalLayoutCache } from '../../pen/layout/incrementalLayout';
 import { useEditorActions, useEditorSelector, useEditorStore } from '../../pen/state/EditorContext';
 import { buildPaintRegistry } from '../../pen/paint/registry';
 import { Defs } from '../../pen/paint/Defs';
 import { PaintRegistryProvider } from '../../pen/paint/PaintContext';
-import { resolveRefs } from '../../pen/refs';
-import { substituteVariables } from '../../pen/variables';
 import { renderMaskedChildren } from '../../pen/renderer/MaskedChildren';
-import { layoutDocument } from '../../pen/layout';
 import type { ViewBox } from '../../pen/renderer/viewBox';
 import { filterVisibleTopLevelNodes } from './viewportCulling';
 
@@ -32,19 +30,18 @@ export const CanvasContent = memo(function CanvasContent({ cullViewBox }: Canvas
     getTextMetricsVersion,
   );
 
-  // Reuse pre-computed doc from useDocument on initial mount to avoid double layout work
-  const [initialSnapshot] = useState(() => ({
-    rawDoc,
-    doc: store.getState().doc,
-    textVersion: textMetricsVersion,
-  }));
+  // Pre-seed per-screen WeakMap layout cache with the pre-computed doc from useDocument
+  const [layoutCache] = useState(() => {
+    const cache = new IncrementalLayoutCache();
+    const initState = store.getState();
+    cache.seed(initState.rawDoc, initState.doc, getTextMetricsVersion());
+    return cache;
+  });
 
-  const doc = useMemo(() => {
-    if (rawDoc === initialSnapshot.rawDoc && textMetricsVersion === initialSnapshot.textVersion) {
-      return initialSnapshot.doc;
-    }
-    return layoutDocument(substituteVariables(resolveRefs(rawDoc)));
-  }, [rawDoc, textMetricsVersion, initialSnapshot]);
+  const doc = useMemo(
+    () => layoutCache.compute(rawDoc, textMetricsVersion),
+    [layoutCache, rawDoc, textMetricsVersion],
+  );
 
   const visibleChildren = useMemo(
     () => filterVisibleTopLevelNodes(doc.children, cullViewBox, selectedNodeId),

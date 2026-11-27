@@ -84,7 +84,12 @@ export function CollabSync({ connected, joining, syncDoc, setRemoteHandler, setL
     syncTimerRef.current = window.setTimeout(() => {
       syncTimerRef.current = null;
       lastSyncedRef.current = json;
-      syncDoc({ version: state.rawDoc.version, children });
+      syncDoc({
+        version: state.rawDoc.version,
+        children,
+        ...(state.rawDoc.variables ? { variables: state.rawDoc.variables } : {}),
+        ...(state.rawDoc.themes ? { themes: state.rawDoc.themes } : {}),
+      });
     }, 120);
   }, [connected, state.rawDoc, syncDoc]);
 

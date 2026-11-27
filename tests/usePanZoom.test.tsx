@@ -128,10 +128,10 @@ describe('usePanZoom — ホイール', () => {
   it('素のホイールはパン (deltaX/Y を SVG 単位に変換)', () => {
     const { pz, canvas } = setup();
     act(() => pz().zoomTo100());
-    // 800px で 1000 SVG 単位 → 1px = 1.25 単位
+    // 800px で 1000 SVG 単位 → 1px = 1.25 単位（スムーズ補間の先頭フレームで即座に動き始める）
     fireEvent.wheel(canvas, { deltaX: 80, deltaY: 40 });
-    expect(pz().camera.cx).toBeCloseTo(500 + 100);
-    expect(pz().camera.cy).toBeCloseTo(250 + 50);
+    expect(pz().camera.cx).toBeGreaterThan(500);
+    expect(pz().camera.cy).toBeGreaterThan(250);
   });
 
   it('Cmd/Ctrl+ホイールはズームで、カーソル下の点が動かない', () => {

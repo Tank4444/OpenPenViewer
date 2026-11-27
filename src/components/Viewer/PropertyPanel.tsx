@@ -3,8 +3,9 @@
  * 値を編集するとリアルタイムで SVG に反映される。
  */
 
-import { memo, useCallback, useEffect, useRef, useState } from 'react';
-import { useEditor } from '../../pen/state/EditorContext';
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useEditorActions, useEditorSelector } from '../../pen/state/EditorContext';
+import { findNode } from '../../pen/state/nodeOps';
 import type { PenNode } from '../../pen/types';
 import { ColorPicker } from './ColorPicker';
 import { EditableField, NumberField } from './propertyFields';
@@ -17,16 +18,22 @@ export const PropertyPanel = memo(function PropertyPanel({
   collapsed?: boolean;
   onTogglePanel?: () => void;
 }) {
+  const docChildren = useEditorSelector((s) => s.doc.children);
+  const rawDocChildren = useEditorSelector((s) => s.rawDoc.children);
+  const selectedNodeId = useEditorSelector((s) => s.selectedNodeId);
+  const insertMode = useEditorSelector((s) => s.insertMode);
+  const selectedNode = useMemo(
+    () => (selectedNodeId ? findNode(docChildren, selectedNodeId) : null),
+    [docChildren, selectedNodeId],
+  );
   const {
-    selectedNode,
     selectNode,
     updateNode,
     updateNodeSilent,
     pushUndoCheckpoint,
-    state,
     enterInsertMode,
     exitInsertMode,
-  } = useEditor();
+  } = useEditorActions();
 
   // カラーピッカー用: ドラッグ中は silent、確定時に undo に積む
   const patchSilent = useCallback(
@@ -99,8 +106,8 @@ export const PropertyPanel = memo(function PropertyPanel({
 
   // Exit insert mode when textarea/input loses focus
   const handleBlur = useCallback(() => {
-    if (state.insertMode) exitInsertMode();
-  }, [state.insertMode, exitInsertMode]);
+    if (insertMode) exitInsertMode();
+  }, [insertMode, exitInsertMode]);
 
   if (collapsed) {
     return (
@@ -635,7 +642,7 @@ export const PropertyPanel = memo(function PropertyPanel({
             if (children) walkReusable(children);
           }
         };
-        walkReusable(state.rawDoc.children);
+        walkReusable(rawDocChildren);
 
         if (reusable) {
           const vOf = (n as { variantOf?: string }).variantOf ?? '';
@@ -867,7 +874,7 @@ export const PropertyPanel = memo(function PropertyPanel({
 
       {/* Prototype: onTap (遷移先フレーム) + transition */}
       {(() => {
-        const topFrames = state.doc.children.filter((c) => c.type === 'frame') as Array<
+        const topFrames = docChildren.filter((c) => c.type === 'frame') as Array<
           PenNode & { name?: string }
         >;
         if (topFrames.length === 0) return null;

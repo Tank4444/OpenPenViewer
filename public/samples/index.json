@@ -2,41 +2,41 @@
   {
     "name": "mobile-app.pen",
     "label": "📱 Mobile App",
-    "description": "SNS風アプリ WF — zoom/pan/フレーム検索を試そう"
+    "description": "Мобильный интерфейс — экраны, навигация и поиск"
   },
   {
     "name": "dashboard.pen",
     "label": "📊 Dashboard",
-    "description": "管理画面 — サイドバー + KPI + チャート"
+    "description": "Панель управления — сайдбар, KPI и графики"
   },
   {
     "name": "variables.pen",
     "label": "🎨 Variables",
-    "description": "$token 変数参照のデモ"
+    "description": "Пример токенов и переменных ($token)"
   },
   {
     "name": "components.pen",
     "label": "🧩 Components",
-    "description": "ref コンポーネントインスタンスのデモ"
+    "description": "Переиспользуемые компоненты и инстансы (ref)"
   },
   {
     "name": "rotation.pen",
     "label": "🎞️ Rotation",
-    "description": "Polaroid scatter — rotation (傾き) のデモ"
+    "description": "Поворот слоёв и композиция карточек"
   },
   {
     "name": "shapes.pen",
     "label": "△○□ Shapes",
-    "description": "rect / ellipse / polygon / line / text / path"
+    "description": "Фигуры: rect, ellipse, polygon, line, text, path"
   },
   {
     "name": "gradient.pen",
     "label": "🌈 Gradient",
-    "description": "linear / radial / blur / shadow"
+    "description": "Линейные и радиальные градиенты, тени и блюр"
   },
   {
     "name": "layout.pen",
     "label": "📐 Layout",
-    "description": "frame と子ノードの再帰描画"
+    "description": "Фреймы и вложенный Auto Layout"
   }
 ]

@@ -229,3 +229,53 @@ export async function saveBinaryFile(
   URL.revokeObjectURL(url);
   return { saved: true, name: suggestedName };
 }
+
+export async function setDesktopWindowTheme(theme: 'dark' | 'light'): Promise<void> {
+  if (!isTauriHost()) return;
+  try {
+    const { getCurrentWindow } = await import('@tauri-apps/api/window');
+    await getCurrentWindow().setTheme(theme);
+  } catch {
+    // ignore if unsupported on platform
+  }
+}
+
+export interface CollabHostInfo {
+  ip: string;
+  hostname: string;
+  inDomain: boolean;
+  port: number;
+}
+
+export async function startCollabHost(): Promise<CollabHostInfo | null> {
+  if (!isTauriHost()) return null;
+  try {
+    const { invoke } = await import('@tauri-apps/api/core');
+    return await invoke<CollabHostInfo>('start_collab_host');
+  } catch (err) {
+    console.error('[collab] failed to start embedded host:', err);
+    return null;
+  }
+}
+
+export interface McpBridgeInfo {
+  running: boolean;
+  url: string;
+  scriptPath: string;
+}
+
+export async function startMcpBridge(): Promise<McpBridgeInfo | null> {
+  if (!isTauriHost()) return null;
+  const { invoke } = await import('@tauri-apps/api/core');
+  return invoke<McpBridgeInfo>('start_mcp_bridge');
+}
+
+export async function stopMcpBridge(): Promise<void> {
+  if (!isTauriHost()) return;
+  try {
+    const { invoke } = await import('@tauri-apps/api/core');
+    await invoke('stop_mcp_bridge');
+  } catch {
+    // ignore
+  }
+}

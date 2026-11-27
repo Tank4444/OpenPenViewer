@@ -14,6 +14,66 @@ import { createServer } from 'http';
 import { WebSocketServer } from 'ws';
 import * as Y from 'yjs';
 import { createInterface } from 'readline';
+import { listSkills, readSkill } from './skillsLoader.js';
+
+// Never crash the MCP stdio process on unexpected async/socket errors
+process.on('uncaughtException', (err) => {
+  process.stderr.write(`[collab-bridge] uncaughtException: ${err?.stack || err}\n`);
+});
+process.on('unhandledRejection', (reason) => {
+  process.stderr.write(`[collab-bridge] unhandledRejection: ${reason}\n`);
+});
+
+const VALID_NODE_TYPES = new Set([
+  'frame',
+  'rectangle',
+  'ellipse',
+  'line',
+  'polygon',
+  'path',
+  'text',
+  'group',
+  'icon_font',
+  'image',
+  'note',
+  'ref',
+  'connection',
+]);
+
+const VALID_VAR_TYPES = new Set(['color', 'number', 'boolean', 'string']);
+
+/** Validate and normalize a PenNode tree before inserting/updating so malformed AI output never crashes the editor. */
+function validateAndNormalizeNode(raw, depth = 0) {
+  if (depth > 30) throw new Error('Node nesting too deep (max 30 levels)');
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+    throw new Error('Node must be a plain object');
+  }
+  if (typeof raw.type !== 'string' || !VALID_NODE_TYPES.has(raw.type)) {
+    throw new Error(`Unsupported node type "${String(raw.type)}". Allowed: ${[...VALID_NODE_TYPES].join(', ')}`);
+  }
+  const copy = { ...raw };
+  copy.id = typeof copy.id === 'string' && copy.id.trim()
+    ? copy.id.trim()
+    : `node_${Math.random().toString(36).slice(2, 9)}`;
+
+  for (const numKey of ['x', 'y', 'fontSize', 'opacity', 'rotation', 'gap', 'cornerRadius']) {
+    if (numKey in copy && typeof copy[numKey] === 'number' && !Number.isFinite(copy[numKey])) {
+      delete copy[numKey];
+    }
+  }
+  for (const sizeKey of ['width', 'height']) {
+    if (sizeKey in copy && typeof copy[sizeKey] === 'number' && !Number.isFinite(copy[sizeKey])) {
+      delete copy[sizeKey];
+    }
+  }
+  if ('children' in copy) {
+    if (!Array.isArray(copy.children)) {
+      throw new Error(`Node "${copy.id}" has non-array children`);
+    }
+    copy.children = copy.children.map((c) => validateAndNormalizeNode(c, depth + 1));
+  }
+  return copy;
+}
 
 const PORT = parseInt(process.env.PORT ?? '4567', 10);
 
@@ -104,6 +164,36 @@ const httpServer = createServer(async (req, res) => {
       return json(res, { report: formatReport(results), data: results });
     }
 
+    // GET /skills
+    if (req.method === 'GET' && path === '/skills') {
+      return json(res, listSkills());
+    }
+
+    // GET /skills/:name
+    if (req.method === 'GET' && path.startsWith('/skills/')) {
+      const skillName = decodeURIComponent(path.slice(8));
+      const skill = readSkill(skillName);
+      if (!skill) return json(res, { error: `Skill not found: ${skillName}` }, 404);
+      res.writeHead(200, { 'Content-Type': 'text/markdown; charset=utf-8' });
+      res.end(skill.content);
+      return;
+    }
+
+    // GET /screenshot?nodeId=...&scale=2
+    if (req.method === 'GET' && path === '/screenshot') {
+      const nodeId = url.searchParams.get('nodeId') ?? undefined;
+      const scale = Number(url.searchParams.get('scale') ?? '2');
+      const shot = await requestScreenshot(nodeId, Number.isFinite(scale) ? scale : 2);
+      const base64 = shot.dataUrl.replace(/^data:image\/\w+;base64,/, '');
+      const buf = Buffer.from(base64, 'base64');
+      res.writeHead(200, {
+        'Content-Type': shot.mimeType || 'image/png',
+        'Content-Length': String(buf.length),
+      });
+      res.end(buf);
+      return;
+    }
+
     // 404
     json(res, { error: 'Not found' }, 404);
   } catch (e) {
@@ -128,6 +218,24 @@ function readBody(req) {
 // ── WebSocket Server (同じ HTTP サーバー上) ──
 const wss = new WebSocketServer({ server: httpServer });
 const wsClients = new Set();
+const pendingScreenshots = new Map();
+let nextShotId = 1;
+
+function requestScreenshot(nodeId, scale = 2) {
+  const client = Array.from(wsClients).find((ws) => ws.readyState === 1);
+  if (!client) {
+    return Promise.reject(new Error('No OpenPenViewer client connected to MCP Bridge'));
+  }
+  const requestId = `shot-${nextShotId++}`;
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      pendingScreenshots.delete(requestId);
+      reject(new Error('Screenshot timed out (10s)'));
+    }, 10000);
+    pendingScreenshots.set(requestId, { resolve, reject, timer });
+    client.send(JSON.stringify({ type: 'screenshot-request', requestId, nodeId, scale }));
+  });
+}
 
 function broadcast(data, sender) {
   for (const ws of wsClients) {
@@ -162,8 +270,21 @@ wss.on('connection', (ws) => {
           if (parsed.doc.variables) ymap.set('variables', JSON.stringify(parsed.doc.variables));
         });
         broadcast(msg, ws);
+      } else if (parsed.type === 'screenshot-response' && parsed.requestId) {
+        const pending = pendingScreenshots.get(parsed.requestId);
+        if (pending) {
+          clearTimeout(pending.timer);
+          pendingScreenshots.delete(parsed.requestId);
+          if (parsed.error) pending.reject(new Error(parsed.error));
+          else pending.resolve(parsed);
+        }
       }
     } catch { /* ignore */ }
+  });
+
+  ws.on('error', (err) => {
+    log(`WebSocket client error: ${err.message}`);
+    wsClients.delete(ws);
   });
 
   ws.on('close', () => {
@@ -201,6 +322,61 @@ function updateNode(nodes, id, patch) {
     if (n.children) return { ...n, children: updateNode(n.children, id, patch) };
     return n;
   });
+}
+
+function insertNode(nodes, parentId, newNode, index) {
+  if (!parentId) {
+    const copy = [...nodes];
+    if (typeof index === 'number' && index >= 0 && index <= copy.length) {
+      copy.splice(index, 0, newNode);
+    } else {
+      copy.push(newNode);
+    }
+    return { updated: copy, inserted: true };
+  }
+  let inserted = false;
+  const updated = nodes.map((n) => {
+    if (n.id === parentId) {
+      inserted = true;
+      const kids = Array.isArray(n.children) ? [...n.children] : [];
+      if (typeof index === 'number' && index >= 0 && index <= kids.length) {
+        kids.splice(index, 0, newNode);
+      } else {
+        kids.push(newNode);
+      }
+      return { ...n, children: kids };
+    }
+    if (Array.isArray(n.children)) {
+      const res = insertNode(n.children, parentId, newNode, index);
+      if (res.inserted) {
+        inserted = true;
+        return { ...n, children: res.updated };
+      }
+    }
+    return n;
+  });
+  return { updated, inserted };
+}
+
+function removeNode(nodes, id) {
+  let removed = false;
+  const out = [];
+  for (const n of nodes) {
+    if (n.id === id) {
+      removed = true;
+      continue;
+    }
+    if (Array.isArray(n.children)) {
+      const res = removeNode(n.children, id);
+      if (res.removed) {
+        removed = true;
+        out.push({ ...n, children: res.updated });
+        continue;
+      }
+    }
+    out.push(n);
+  }
+  return { updated: out, removed };
 }
 
 function listFrames(nodes, result = []) {
@@ -375,20 +551,59 @@ function getStateDescription(state, screenName) {
 const rl = createInterface({ input: process.stdin });
 
 const TOOLS = [
+  { name: 'list_skills', description: 'List all built-in OpenPenViewer design & editing skills with descriptions and URIs. Call this first to learn .pen format, UI design guidelines, visual QA, Figma export rules, and code handoff.', inputSchema: { type: 'object', properties: {} } },
+  { name: 'get_skill', description: 'Read the full Markdown instructions of a specific OpenPenViewer skill by name (from list_skills).', inputSchema: { type: 'object', properties: { name: { type: 'string', description: 'Skill name, e.g. "pen-format-and-layout", "ui-design-system", "visual-qa-workflow", "figma-export-ready", "design-to-code-handoff"' } }, required: ['name'] } },
   { name: 'list_frames', description: 'List all frames in the document', inputSchema: { type: 'object', properties: {} } },
   { name: 'read_node', description: 'Read a node by ID', inputSchema: { type: 'object', properties: { id: { type: 'string' } }, required: ['id'] } },
   { name: 'update_node', description: 'Update node properties', inputSchema: { type: 'object', properties: { id: { type: 'string' }, patch: { type: 'object' } }, required: ['id', 'patch'] } },
+  { name: 'add_node', description: 'Add a new PenNode (screen, frame, text, rectangle, icon_font, etc.) at root or inside a parent frame.', inputSchema: { type: 'object', properties: { parentId: { type: 'string', description: 'Optional parent frame/group ID. Omit to append at top-level.' }, node: { type: 'object', description: 'Valid PenNode object (must include type; id is auto-generated if omitted).' }, index: { type: 'number', description: 'Optional insertion index inside children array.' } }, required: ['node'] } },
+  { name: 'delete_node', description: 'Delete a node by ID from the open document.', inputSchema: { type: 'object', properties: { id: { type: 'string', description: 'ID of the node to delete' } }, required: ['id'] } },
+  { name: 'set_variable', description: 'Create or update a design token variable in doc.variables (referenced via "$name" in fills/strokes).', inputSchema: { type: 'object', properties: { name: { type: 'string', description: 'Variable name without leading $' }, type: { type: 'string', enum: ['color', 'number', 'boolean', 'string'], description: 'Variable type' }, value: { description: 'Variable value (hex color, number, boolean, or string)' } }, required: ['name', 'type', 'value'] } },
   { name: 'get_document', description: 'Get full PenDocument', inputSchema: { type: 'object', properties: {} } },
   { name: 'get_status', description: 'Get bridge status', inputSchema: { type: 'object', properties: {} } },
   { name: 'check_ui_states', description: 'Analyze Five UI States coverage for all screens. Returns a report showing which states (Ideal/Empty/Loading/Error/Partial) are defined and which are missing.', inputSchema: { type: 'object', properties: {} } },
   { name: 'suggest_missing_states', description: 'Get suggestions for missing UI states with frame templates that can be added to the document.', inputSchema: { type: 'object', properties: { screenName: { type: 'string', description: 'Screen name to get suggestions for (from check_ui_states result)' } }, required: ['screenName'] } },
   { name: 'export_design_doc', description: 'Export a design document in Markdown format with Five UI States analysis, component structure, and design tokens.', inputSchema: { type: 'object', properties: { projectName: { type: 'string', description: 'Project name for the document title' }, locale: { type: 'string', enum: ['en', 'ja'], description: 'Language (default: ja)' } } } },
+  { name: 'get_screenshot', description: 'Capture a PNG screenshot of the current open design canvas or a specific frame/node by ID.', inputSchema: { type: 'object', properties: { nodeId: { type: 'string', description: 'Optional frame or node ID to crop to. If omitted, captures the current viewport.' }, scale: { type: 'number', description: 'Pixel scale factor (1-4, default: 2)' } } } },
 ];
+
+const SERVER_INSTRUCTIONS =
+  'OpenPenViewer MCP server. Before creating or editing .pen designs, call list_skills and read the relevant skill with get_skill (e.g. pen-format-and-layout, ui-design-system, visual-qa-workflow, figma-export-ready, design-to-code-handoff). Always visually verify changes with get_screenshot.';
 
 function handleMcpRequest(msg) {
   const { id, method, params } = msg;
-  if (method === 'initialize') return respond(id, { protocolVersion: '2024-11-05', serverInfo: { name: 'pencil-collab-bridge', version: '0.2.0' }, capabilities: { tools: {} } });
+  if (method === 'initialize') {
+    return respond(id, {
+      protocolVersion: '2024-11-05',
+      serverInfo: { name: 'openpenviewer-mcp', version: '0.3.0' },
+      capabilities: { tools: {}, resources: {} },
+      instructions: SERVER_INSTRUCTIONS,
+    });
+  }
   if (method === 'tools/list') return respond(id, { tools: TOOLS });
+  if (method === 'resources/list') {
+    const resources = listSkills().map((s) => ({
+      uri: s.uri,
+      name: s.title,
+      description: s.description,
+      mimeType: 'text/markdown',
+    }));
+    return respond(id, { resources });
+  }
+  if (method === 'resources/read') {
+    const uri = params?.uri ?? '';
+    const skill = readSkill(uri);
+    if (!skill) return respondError(id, -32602, `Skill resource not found: ${uri}`);
+    return respond(id, {
+      contents: [
+        {
+          uri: skill.meta.uri,
+          mimeType: 'text/markdown',
+          text: skill.content,
+        },
+      ],
+    });
+  }
   if (method === 'notifications/initialized') return;
 
   if (method === 'tools/call') {
@@ -396,16 +611,81 @@ function handleMcpRequest(msg) {
     const args = params?.arguments ?? {};
     const doc = getPenDoc();
     switch (name) {
+      case 'list_skills':
+        return respond(id, { content: [{ type: 'text', text: JSON.stringify(listSkills(), null, 2) }] });
+      case 'get_skill': {
+        const skill = readSkill(args.name);
+        if (!skill) {
+          const available = listSkills().map((s) => s.name).join(', ');
+          return respond(id, {
+            content: [{ type: 'text', text: `Skill not found: "${args.name}". Available skills: ${available}` }],
+            isError: true,
+          });
+        }
+        return respond(id, { content: [{ type: 'text', text: skill.content }] });
+      }
       case 'list_frames': return respond(id, { content: [{ type: 'text', text: JSON.stringify(listFrames(doc.children), null, 2) }] });
       case 'read_node': {
         const node = findNode(doc.children, args.id);
         return respond(id, { content: [{ type: 'text', text: node ? JSON.stringify(node, null, 2) : `Not found: ${args.id}` }], ...(node ? {} : { isError: true }) });
       }
       case 'update_node': {
+        if (!args.id || typeof args.id !== 'string') {
+          return respond(id, { content: [{ type: 'text', text: 'Invalid argument: "id" must be a non-empty string.' }], isError: true });
+        }
+        if (!args.patch || typeof args.patch !== 'object' || Array.isArray(args.patch)) {
+          return respond(id, { content: [{ type: 'text', text: 'Invalid argument: "patch" must be a plain object.' }], isError: true });
+        }
+        if (!findNode(doc.children, args.id)) {
+          return respond(id, { content: [{ type: 'text', text: `Node not found: ${args.id}` }], isError: true });
+        }
         const updated = updateNode(doc.children, args.id, args.patch);
         ydoc.transact(() => { ymap.set('children', JSON.stringify(updated)); });
         broadcastDoc(getPenDoc());
         return respond(id, { content: [{ type: 'text', text: `Updated: ${args.id}` }] });
+      }
+      case 'add_node': {
+        let nodeToInsert;
+        try {
+          nodeToInsert = validateAndNormalizeNode(args.node);
+        } catch (err) {
+          return respond(id, { content: [{ type: 'text', text: `Invalid node: ${err instanceof Error ? err.message : String(err)}` }], isError: true });
+        }
+        const res = insertNode(doc.children, args.parentId, nodeToInsert, args.index);
+        if (!res.inserted) {
+          return respond(id, { content: [{ type: 'text', text: `Parent node not found: ${args.parentId}` }], isError: true });
+        }
+        ydoc.transact(() => { ymap.set('children', JSON.stringify(res.updated)); });
+        broadcastDoc(getPenDoc());
+        return respond(id, { content: [{ type: 'text', text: JSON.stringify({ ok: true, id: nodeToInsert.id, parentId: args.parentId ?? null }) }] });
+      }
+      case 'delete_node': {
+        if (!args.id || typeof args.id !== 'string') {
+          return respond(id, { content: [{ type: 'text', text: 'Invalid argument: "id" must be a non-empty string.' }], isError: true });
+        }
+        const res = removeNode(doc.children, args.id);
+        if (!res.removed) {
+          return respond(id, { content: [{ type: 'text', text: `Node not found: ${args.id}` }], isError: true });
+        }
+        ydoc.transact(() => { ymap.set('children', JSON.stringify(res.updated)); });
+        broadcastDoc(getPenDoc());
+        return respond(id, { content: [{ type: 'text', text: `Deleted: ${args.id}` }] });
+      }
+      case 'set_variable': {
+        const cleanName = String(args.name ?? '').replace(/^\$/, '').trim();
+        if (!cleanName) {
+          return respond(id, { content: [{ type: 'text', text: 'Variable name is required.' }], isError: true });
+        }
+        if (!VALID_VAR_TYPES.has(args.type)) {
+          return respond(id, { content: [{ type: 'text', text: `Invalid variable type "${String(args.type)}". Allowed: color, number, boolean, string.` }], isError: true });
+        }
+        if (args.value === undefined || args.value === null) {
+          return respond(id, { content: [{ type: 'text', text: 'Variable value is required.' }], isError: true });
+        }
+        const vars = { ...(doc.variables ?? {}), [cleanName]: { type: args.type, value: args.value } };
+        ydoc.transact(() => { ymap.set('variables', JSON.stringify(vars)); });
+        broadcastDoc(getPenDoc());
+        return respond(id, { content: [{ type: 'text', text: `Set variable $${cleanName} = ${JSON.stringify(args.value)}` }] });
       }
       case 'get_document': return respond(id, { content: [{ type: 'text', text: JSON.stringify(doc, null, 2) }] });
       case 'get_status': return respond(id, { content: [{ type: 'text', text: JSON.stringify({ wsPort: PORT, clients: wsClients.size, nodes: doc.children.length }, null, 2) }] });
@@ -447,6 +727,25 @@ function handleMcpRequest(msg) {
         const md = generateDesignDoc(doc, projectName, locale);
         return respond(id, { content: [{ type: 'text', text: md }] });
       }
+      case 'get_screenshot': {
+        const scale = typeof args.scale === 'number' && Number.isFinite(args.scale) ? args.scale : 2;
+        requestScreenshot(args.nodeId, scale)
+          .then((shot) => {
+            const base64 = shot.dataUrl.replace(/^data:image\/\w+;base64,/, '');
+            respond(id, {
+              content: [
+                { type: 'image', data: base64, mimeType: shot.mimeType || 'image/png' },
+              ],
+            });
+          })
+          .catch((err) => {
+            respond(id, {
+              content: [{ type: 'text', text: `Screenshot failed: ${err instanceof Error ? err.message : String(err)}` }],
+              isError: true,
+            });
+          });
+        return;
+      }
       default: return respond(id, { content: [{ type: 'text', text: `Unknown: ${name}` }], isError: true });
     }
   }
@@ -457,9 +756,35 @@ function respond(id, result) { process.stdout.write(JSON.stringify({ jsonrpc: '2
 function respondError(id, code, message) { process.stdout.write(JSON.stringify({ jsonrpc: '2.0', id, error: { code, message } }) + '\n'); }
 function log(msg) { process.stderr.write(`[collab-bridge] ${msg}\n`); }
 
-rl.on('line', (line) => { try { handleMcpRequest(JSON.parse(line)); } catch { /* ignore */ } });
+rl.on('line', (line) => {
+  const trimmed = line.trim();
+  if (!trimmed) return;
+  let msg;
+  try {
+    msg = JSON.parse(trimmed);
+  } catch (err) {
+    respondError(null, -32700, `Parse error: ${err instanceof Error ? err.message : String(err)}`);
+    return;
+  }
+  try {
+    handleMcpRequest(msg);
+  } catch (err) {
+    log(`MCP handler error: ${err?.stack || err}`);
+    if (msg && msg.id !== undefined) {
+      respondError(msg.id, -32603, `Internal error: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+});
 
 // ── Start ──
+httpServer.on('error', (err) => {
+  if (err && err.code === 'EADDRINUSE') {
+    log(`Port ${PORT} is already in use by another bridge instance; MCP stdio remains active.`);
+  } else {
+    log(`HTTP server error: ${err?.message || err}`);
+  }
+});
+
 httpServer.listen(PORT, () => {
   log(`Server listening on http://localhost:${PORT}`);
   log('');

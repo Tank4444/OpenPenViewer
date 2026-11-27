@@ -16,6 +16,10 @@ export default defineConfig(({ mode, command }) => {
   const defaultBase = command === 'build' ? '/OpenPenViewer/' : '/';
   return {
     plugins: [react()],
+    server: {
+      host: true,
+      allowedHosts: true,
+    },
     base: env.VITE_BASE ?? defaultBase,
     define: {
       __APP_VERSION__: JSON.stringify(pkgVersion),

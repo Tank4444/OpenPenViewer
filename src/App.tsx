@@ -2,6 +2,7 @@ import { Suspense, lazy, useCallback, useEffect, useState } from 'react';
 import { useDocument } from './pen/state/useDocument';
 import { PenViewer } from './components/Viewer/PenViewer';
 import { Landing } from './components/Landing';
+import { CollabJoinScreen } from './components/CollabJoinScreen';
 import { ErrorView } from './components/ErrorView';
 // Docs と Vision は初期表示では開かれないうえ、docsContent.ts だけで
 // 1500 行ある。初期バンドルから外して開いたときに取りに行く。
@@ -10,6 +11,13 @@ const Vision = lazy(() => import('./components/Vision').then((m) => ({ default: 
 import { useI18n } from './i18n/I18nContext';
 import type { SupportedLocale } from './i18n/detectLocale';
 import { isShareEnabled, uploadPen, fetchSharedPen } from './utils/shareApi';
+import {
+  addRecentFile,
+  clearRecentFiles,
+  getRecentFiles,
+  removeRecentFile,
+  type RecentFileEntry,
+} from './utils/recentFiles';
 import { useGitHub } from './github/GitHubContext';
 import { GitHubPanel } from './github/GitHubPanel';
 import { HistoryPanel } from './github/HistoryPanel';
@@ -23,6 +31,7 @@ import {
   openLocalFileDialog,
   readLocalFile,
   setActiveLocalPath,
+  setDesktopWindowTheme,
   subscribeActiveLocalPath,
   subscribeSaveEvents,
   watchLocalFile,
@@ -61,7 +70,35 @@ export function App() {
   const [loadNonce, setLoadNonce] = useState(0);
   const [localPath, setLocalPath] = useState<string | null>(null);
   const [savedToast, setSavedToast] = useState<string | null>(null);
+  const [recentFiles, setRecentFiles] = useState<RecentFileEntry[]>(() => getRecentFiles());
+  const [pendingRoomId, setPendingRoomId] = useState<string | null>(() => {
+    const params = new URLSearchParams(window.location.search);
+    const r = params.get('code') ?? params.get('room');
+    return r ? r.trim() : null;
+  });
+  const [appTheme, setAppTheme] = useState<'dark' | 'light'>(() => {
+    try {
+      const saved = localStorage.getItem('openpenviewer.welcomeTheme');
+      if (saved === 'light' || saved === 'dark') return saved;
+    } catch {
+      // ignore
+    }
+    return 'dark';
+  });
   const isDesktop = isTauriHost();
+
+  useEffect(() => {
+    try {
+      localStorage.setItem('openpenviewer.welcomeTheme', appTheme);
+    } catch {
+      // ignore
+    }
+    void setDesktopWindowTheme(appTheme);
+  }, [appTheme]);
+
+  const toggleAppTheme = useCallback(() => {
+    setAppTheme((prev) => (prev === 'dark' ? 'light' : 'dark'));
+  }, []);
 
   useEffect(() => subscribeActiveLocalPath(setLocalPath), []);
 
@@ -91,11 +128,12 @@ export function App() {
         } else {
           file = new File([result.text ?? ''], result.name, { type: 'application/json' });
         }
+        if (bumpNonce) setLoadNonce((n) => n + 1);
         await loadFile(file);
         setCurrentFile(null);
         setActiveLocalPath(isFig ? null : path);
-        await watchLocalFile(isFig ? null : path);
-        if (bumpNonce) setLoadNonce((n) => n + 1);
+        setRecentFiles(addRecentFile({ id: `local:${path}`, name: result.name, kind: 'local', path }));
+        void watchLocalFile(isFig ? null : path);
       } catch (e) {
         console.error('Failed to open local file:', e);
       }
@@ -116,11 +154,19 @@ export function App() {
       } else {
         file = new File([result.text ?? ''], result.name, { type: 'application/json' });
       }
+      setLoadNonce((n) => n + 1);
       await loadFile(file);
       setCurrentFile(null);
       setActiveLocalPath(isFig ? null : result.path);
-      await watchLocalFile(isFig ? null : result.path);
-      setLoadNonce((n) => n + 1);
+      setRecentFiles(
+        addRecentFile({
+          id: `local:${result.path}`,
+          name: result.name,
+          kind: 'local',
+          path: result.path,
+        }),
+      );
+      void watchLocalFile(isFig ? null : result.path);
     } catch (e) {
       console.error('Failed to open local dialog:', e);
     }
@@ -167,12 +213,16 @@ export function App() {
     const params = new URLSearchParams(window.location.search);
     const src = params.get('src');
     const id = params.get('id');
-    const room = params.get('room');
+    const sig = params.get('sig');
+    if (sig) {
+      try {
+        localStorage.setItem('openpenviewer.collab.signaling', sig.trim());
+      } catch {
+        // ignore
+      }
+    }
     if (src) {
       void loadUrl(src);
-    } else if (room) {
-      // 招待リンク経由: 空ドキュメントで起動し、ビューア側でルームに入室する
-      loadEmpty();
     } else if (id && isShareEnabled()) {
       void (async () => {
         try {
@@ -278,12 +328,17 @@ export function App() {
     const s = state.source;
     if (s.kind === 'file') return s.name;
     if (s.kind === 'url') return s.url;
-    if (s.kind === 'collab') return '🔴 Live collaboration';
-    return `samples/${s.name}`;
+    if (s.kind === 'sample') return s.name;
+    return 'Untitled.pen';
   })();
 
+  const isWelcomeScreen = !showDocs && !showVision && state.status === 'idle';
+  const isEditorScreen = !showDocs && !showVision && state.status === 'ready';
+  const hideTopHeader = isWelcomeScreen || isEditorScreen;
+
   return (
-    <div className="app">
+    <div className="app" data-theme={appTheme}>
+      {!hideTopHeader && (
       <header className="header">
         <span className="brand">✏️ OpenPenViewer</span>
         {isDesktop && (
@@ -421,8 +476,9 @@ export function App() {
           </span>
         </div>
       </header>
+      )}
 
-      <main className="main">
+      <main className={hideTopHeader ? 'main main--welcome' : 'main'}>
         {showVision && (
           <Suspense fallback={<div className="lazy-fallback" />}>
             <Vision onBack={() => setShowVision(false)} locale={locale} />
@@ -435,13 +491,68 @@ export function App() {
           </Suspense>
         )}
 
-        {!showDocs && !showVision && state.status === 'idle' && (
+        {!showDocs && !showVision && state.status === 'idle' && pendingRoomId && (
+          <CollabJoinScreen
+            roomId={pendingRoomId}
+            theme={appTheme}
+            onJoin={(name, color) => {
+              try {
+                localStorage.setItem('openpenviewer.collab.userName', name);
+                localStorage.setItem('openpenviewer.collab.color', color);
+              } catch {
+                // ignore
+              }
+              setPendingRoomId(null);
+              loadEmpty();
+            }}
+          />
+        )}
+
+        {!showDocs && !showVision && state.status === 'idle' && !pendingRoomId && (
           <Landing
             onFile={(f) => void loadFile(f)}
             onUrl={(url) => void loadUrl(url)}
-            onSample={(name) => void loadSample(name)}
+            onSample={(name) => {
+              setRecentFiles(
+                addRecentFile({
+                  id: `sample:${name}`,
+                  name,
+                  kind: 'sample',
+                  sampleName: name,
+                }),
+              );
+              void loadSample(name);
+            }}
             onGitHub={openPanel}
             githubConnected={connected}
+            onOpenLocal={isDesktop ? () => void handleOpenLocalDialog() : undefined}
+            onNewFile={() => {
+              setCurrentFile(null);
+              setActiveLocalPath(null);
+              void watchLocalFile(null);
+              loadEmpty();
+              setLoadNonce((n) => n + 1);
+            }}
+            recentFiles={recentFiles}
+            onOpenRecent={(entry) => {
+              if (entry.kind === 'local' && entry.path) {
+                void openLocalPath(entry.path);
+              } else if (entry.kind === 'sample' && entry.sampleName) {
+                setRecentFiles(
+                  addRecentFile({
+                    id: entry.id,
+                    name: entry.name,
+                    kind: 'sample',
+                    sampleName: entry.sampleName,
+                  }),
+                );
+                void loadSample(entry.sampleName);
+              }
+            }}
+            onRemoveRecent={(id) => setRecentFiles(removeRecentFile(id))}
+            onClearRecent={() => setRecentFiles(clearRecentFiles())}
+            theme={appTheme}
+            onToggleTheme={toggleAppTheme}
           />
         )}
 
@@ -468,7 +579,22 @@ export function App() {
         )}
 
         {!showDocs && !showVision && state.status === 'ready' && (
-          <PenViewer key={loadNonce} doc={state.doc} rawDoc={state.rawDoc} />
+          <PenViewer
+            key={loadNonce}
+            doc={state.doc}
+            rawDoc={state.rawDoc}
+            fileName={sourceLabel}
+            savedToast={savedToast}
+            theme={appTheme}
+            onToggleTheme={toggleAppTheme}
+            onOpenLocal={isDesktop ? () => void handleOpenLocalDialog() : undefined}
+            onBack={() => {
+              reset();
+              setCurrentFile(null);
+              setActiveLocalPath(null);
+              void watchLocalFile(null);
+            }}
+          />
         )}
       </main>
 

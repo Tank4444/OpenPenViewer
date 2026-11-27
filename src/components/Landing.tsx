@@ -1,243 +1,330 @@
-import { useI18n } from '../i18n/I18nContext';
-import { DropZone } from './Loader/DropZone';
-import { UrlInput } from './Loader/UrlInput';
-import { SampleList } from './Loader/SampleList';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import { useDropzone } from 'react-dropzone';
+import { setDesktopWindowTheme } from '../platform/hostBridge';
+import type { RecentFileEntry } from '../utils/recentFiles';
+import type { SampleMeta } from './Loader/SampleList';
 
-/**
- * ランディング。
- *
- * 主張は 1 つだけ:「.pen はあなたのリポジトリに置く」。
- * 製図用紙の方眼を地にして、左に repo の中のファイル、右にそれが描く画面を
- * 並べた 1 枚を hero に据える。それ以外の節は意図的に静かにしてある。
- */
+const THEME_STORAGE_KEY = 'openpenviewer.welcomeTheme';
+
+type WelcomeTheme = 'dark' | 'light';
+
+function readInitialTheme(): WelcomeTheme {
+  try {
+    const saved = localStorage.getItem(THEME_STORAGE_KEY);
+    if (saved === 'light' || saved === 'dark') return saved;
+  } catch {
+    // ignore
+  }
+  return 'dark';
+}
+
+function formatRelativeTime(ts: number): string {
+  const diffSec = Math.max(0, Math.floor((Date.now() - ts) / 1000));
+  if (diffSec < 60) return 'только что';
+  const diffMin = Math.floor(diffSec / 60);
+  if (diffMin < 60) return `${diffMin} мин назад`;
+  const diffHr = Math.floor(diffMin / 60);
+  if (diffHr < 24) return `${diffHr} ч назад`;
+  const diffDay = Math.floor(diffHr / 24);
+  if (diffDay === 1) return 'вчера';
+  if (diffDay < 7) return `${diffDay} дн назад`;
+  return new Date(ts).toLocaleDateString();
+}
+
+function getFileExt(name: string): string {
+  const lower = name.toLowerCase();
+  if (lower.endsWith('.fig')) return 'FIG';
+  if (lower.endsWith('.pen')) return 'PEN';
+  return 'FILE';
+}
+
+export interface LandingProps {
+  onFile: (f: File) => void;
+  onUrl?: (url: string) => void;
+  onSample: (name: string) => void;
+  onGitHub?: () => void;
+  githubConnected?: boolean;
+  onOpenLocal?: () => void;
+  onNewFile?: () => void;
+  recentFiles?: RecentFileEntry[];
+  onOpenRecent?: (entry: RecentFileEntry) => void;
+  onRemoveRecent?: (id: string) => void;
+  onClearRecent?: () => void;
+  theme?: WelcomeTheme;
+  onToggleTheme?: () => void;
+}
+
 export function Landing({
   onFile,
-  onUrl,
   onSample,
-  onGitHub,
-  githubConnected,
-}: {
-  onFile: (f: File) => void;
-  onUrl: (url: string) => void;
-  onSample: (name: string) => void;
-  onGitHub: () => void;
-  githubConnected: boolean;
-}) {
-  const { t } = useI18n();
+  onOpenLocal,
+  onNewFile,
+  recentFiles = [],
+  onOpenRecent,
+  onRemoveRecent,
+  onClearRecent,
+  theme: controlledTheme,
+  onToggleTheme,
+}: LandingProps) {
+  const [localTheme, setLocalTheme] = useState<WelcomeTheme>(readInitialTheme);
+  const theme = controlledTheme ?? localTheme;
+  const [samples, setSamples] = useState<SampleMeta[]>([]);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
 
-  const capabilities = ['repo', 'edit', 'render', 'history', 'phone', 'extras'] as const;
+  useEffect(() => {
+    if (controlledTheme) return;
+    try {
+      localStorage.setItem(THEME_STORAGE_KEY, localTheme);
+    } catch {
+      // ignore
+    }
+    void setDesktopWindowTheme(localTheme);
+  }, [controlledTheme, localTheme]);
+
+  const handleToggleTheme = () => {
+    if (onToggleTheme) {
+      onToggleTheme();
+    } else {
+      setLocalTheme((prev) => (prev === 'dark' ? 'light' : 'dark'));
+    }
+  };
+
+  useEffect(() => {
+    let cancelled = false;
+    fetch(`${import.meta.env.BASE_URL}samples/index.json`)
+      .then((r) => (r.ok ? r.json() : []))
+      .then((data) => {
+        if (cancelled) return;
+        setSamples(Array.isArray(data) ? (data as SampleMeta[]) : []);
+      })
+      .catch(() => {
+        if (!cancelled) setSamples([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const onDrop = useCallback(
+    (accepted: File[]) => {
+      if (accepted.length > 0) {
+        onFile(accepted[0]);
+      }
+    },
+    [onFile],
+  );
+
+  const { getRootProps, getInputProps, isDragActive } = useDropzone({
+    onDrop,
+    multiple: false,
+    noClick: true,
+    accept: {
+      'application/json': ['.pen', '.json'],
+      'application/octet-stream': ['.fig'],
+    },
+  });
+
+  const handleOpenClick = () => {
+    if (onOpenLocal) {
+      onOpenLocal();
+    } else {
+      fileInputRef.current?.click();
+    }
+  };
 
   return (
-    <div className="lp">
-      <section className="lp__hero">
-        <h1 className="lp__title">{t('lp.title')}</h1>
-        <p className="lp__lede">
-          <RichText html={t('lp.lede')} />
-        </p>
+    <div className={`welcome welcome--${theme}`} {...getRootProps()}>
+      <input {...getInputProps()} />
+      <input
+        ref={fileInputRef}
+        type="file"
+        accept=".pen,.fig,.json"
+        style={{ display: 'none' }}
+        onChange={(e) => {
+          const f = e.target.files?.[0];
+          if (f) onFile(f);
+          e.target.value = '';
+        }}
+      />
 
-        <div className="lp__actions">
-          <button type="button" className="lp__action lp__action--solid" onClick={onGitHub}>
-            {githubConnected ? t('lp.cta.repo') : t('lp.cta.github')}
-          </button>
-          <a href="#try" className="lp__action lp__action--quiet">
-            {t('lp.cta.open')}
-          </a>
-        </div>
-
-        <RepoToScreen
-          path="design/checkout.pen"
-          branch="main"
-          commits={[
-            { sha: 'a1c9f2e', message: t('lp.log.1'), added: true },
-            { sha: '7e02b41', message: t('lp.log.2') },
-            { sha: '3fd6c08', message: t('lp.log.3') },
-          ]}
-          caption={t('lp.proof.caption')}
-        />
-      </section>
-
-      <section className="lp__section">
-        <h2 className="lp__h2">{t('lp.what.title')}</h2>
-        <dl className="lp__list">
-          {capabilities.map((key) => (
-            <div className="lp__list-row" key={key}>
-              <dt>{t(`lp.what.${key}.title`)}</dt>
-              <dd>{t(`lp.what.${key}.desc`)}</dd>
+      <div className="welcome__shell">
+        <div className="welcome__top">
+          <div className="welcome__brand">
+            <span className="welcome__logo" aria-hidden="true">
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none">
+                <path
+                  d="M12 3L20 7.5V16.5L12 21L4 16.5V7.5L12 3Z"
+                  stroke="currentColor"
+                  strokeWidth="1.8"
+                  strokeLinejoin="round"
+                />
+                <path d="M12 12L20 7.5M12 12V21M12 12L4 7.5" stroke="currentColor" strokeWidth="1.6" />
+              </svg>
+            </span>
+            <div className="welcome__brand-text">
+              <div className="welcome__brand-row">
+                <h1 className="welcome__title">OpenPenViewer</h1>
+                <span className="welcome__version">v{__APP_VERSION__}</span>
+              </div>
+              <p className="welcome__subtitle">Просмотр, редактирование и экспорт макетов .pen и .fig</p>
             </div>
-          ))}
-        </dl>
-      </section>
-
-      <section className="lp__section lp__cost">
-        <h2 className="lp__h2">{t('lp.cost.title')}</h2>
-        <p className="lp__prose">{t('lp.cost.body')}</p>
-        <ul className="lp__facts">
-          <li>{t('lp.cost.fact1')}</li>
-          <li>{t('lp.cost.fact2')}</li>
-          <li>{t('lp.cost.fact3')}</li>
-        </ul>
-      </section>
-
-      <section className="lp__section lp__try" id="try">
-        <h2 className="lp__h2">{t('lp.try.title')}</h2>
-        <p className="lp__prose">{t('lp.try.note')}</p>
-
-        <div className="idle">
-          <button type="button" className="lp__repo-entry" onClick={onGitHub}>
-            <span className="lp__repo-entry-mark" aria-hidden="true">
-              <GitHubMark />
-            </span>
-            <span className="lp__repo-entry-text">
-              <strong>{githubConnected ? t('lp.entry.repo') : t('lp.entry.connect')}</strong>
-              <small>{t('lp.entry.desc')}</small>
-            </span>
-          </button>
-
-          <div className="idle__divider">
-            <span>{t('lp.or')}</span>
           </div>
 
-          <DropZone onFile={onFile} />
-          <UrlInput onSubmit={onUrl} />
-          <SampleList onPick={onSample} />
+          <button
+            type="button"
+            className="welcome__theme-btn"
+            onClick={handleToggleTheme}
+            title={theme === 'dark' ? 'Переключить на светлую тему' : 'Переключить на тёмную тему'}
+            aria-label="Переключить тему"
+          >
+            {theme === 'dark' ? (
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                <circle cx="12" cy="12" r="4" />
+                <path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M6.34 17.66l-1.41 1.41M19.07 4.93l-1.41 1.41" />
+              </svg>
+            ) : (
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z" />
+              </svg>
+            )}
+            <span>{theme === 'dark' ? 'Светлая' : 'Тёмная'}</span>
+          </button>
         </div>
-      </section>
 
-      <footer className="lp__footer">
-        <a href="https://github.com/Tank4444/OpenPenViewer" target="_blank" rel="noopener noreferrer">
-          {t('lp.footer.source')}
-        </a>
-        <a href="https://www.pencil.dev/" target="_blank" rel="noopener noreferrer">
-          Pencil.dev
-        </a>
-        <span>{t('lp.footer.license')}</span>
-      </footer>
+        <div className="welcome__grid">
+          <section className="welcome__primary">
+            <div
+              className={`welcome__dropzone${isDragActive ? ' welcome__dropzone--active' : ''}`}
+              onClick={handleOpenClick}
+              role="button"
+              tabIndex={0}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' || e.key === ' ') {
+                  e.preventDefault();
+                  handleOpenClick();
+                }
+              }}
+            >
+              <div className="welcome__drop-icon" aria-hidden="true">
+                <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7">
+                  <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+                  <polyline points="17 8 12 3 7 8" />
+                  <line x1="12" y1="3" x2="12" y2="15" />
+                </svg>
+              </div>
+              <div className="welcome__drop-title">
+                {isDragActive ? 'Отпустите файл для открытия' : 'Перетащите файл сюда'}
+              </div>
+              <div className="welcome__drop-hint">или нажмите, чтобы выбрать с диска</div>
+              <div className="welcome__badges">
+                <span className="welcome__badge">.pen</span>
+                <span className="welcome__badge">.fig</span>
+              </div>
+            </div>
+
+            <div className="welcome__actions">
+              <button type="button" className="welcome__btn welcome__btn--primary" onClick={handleOpenClick}>
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                  <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" />
+                </svg>
+                <span>Открыть файл</span>
+              </button>
+
+              {onNewFile && (
+                <button type="button" className="welcome__btn welcome__btn--secondary" onClick={onNewFile}>
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                    <line x1="12" y1="5" x2="12" y2="19" />
+                    <line x1="5" y1="12" x2="19" y2="12" />
+                  </svg>
+                  <span>Создать новый</span>
+                </button>
+              )}
+            </div>
+          </section>
+
+          <section className="welcome__secondary">
+            <div className="welcome__panel">
+              <div className="welcome__panel-head">
+                <h2 className="welcome__panel-title">Недавние файлы</h2>
+                {recentFiles.length > 0 && onClearRecent && (
+                  <button type="button" className="welcome__text-btn" onClick={onClearRecent}>
+                    Очистить
+                  </button>
+                )}
+              </div>
+
+              {recentFiles.length === 0 ? (
+                <div className="welcome__empty">
+                  Недавние файлы появятся здесь после первого открытия
+                </div>
+              ) : (
+                <ul className="welcome__recent-list">
+                  {recentFiles.map((entry) => {
+                    const ext = entry.kind === 'sample' ? 'SAMPLE' : getFileExt(entry.name);
+                    return (
+                      <li key={entry.id} className="welcome__recent-item">
+                        <button
+                          type="button"
+                          className="welcome__recent-btn"
+                          onClick={() => onOpenRecent?.(entry)}
+                          title={entry.path ?? entry.name}
+                        >
+                          <span className={`welcome__ext welcome__ext--${ext.toLowerCase()}`}>
+                            {ext}
+                          </span>
+                          <span className="welcome__recent-info">
+                            <span className="welcome__recent-name">{entry.name}</span>
+                            <span className="welcome__recent-meta">
+                              {entry.path ? entry.path : 'Встроенный пример'}
+                            </span>
+                          </span>
+                          <span className="welcome__recent-time">
+                            {formatRelativeTime(entry.openedAt)}
+                          </span>
+                        </button>
+                        {onRemoveRecent && (
+                          <button
+                            type="button"
+                            className="welcome__recent-remove"
+                            onClick={() => onRemoveRecent(entry.id)}
+                            title="Убрать из списка"
+                            aria-label={`Убрать ${entry.name}`}
+                          >
+                            ×
+                          </button>
+                        )}
+                      </li>
+                    );
+                  })}
+                </ul>
+              )}
+            </div>
+
+            {samples.length > 0 && (
+              <div className="welcome__panel">
+                <div className="welcome__panel-head">
+                  <h2 className="welcome__panel-title">Примеры</h2>
+                </div>
+                <div className="welcome__samples">
+                  {samples.map((s) => (
+                    <button
+                      key={s.name}
+                      type="button"
+                      className="welcome__sample-card"
+                      onClick={() => onSample(s.name)}
+                    >
+                      <span className="welcome__sample-name">{s.label}</span>
+                      {s.description && (
+                        <span className="welcome__sample-desc">{s.description}</span>
+                      )}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
+          </section>
+        </div>
+      </div>
     </div>
-  );
-}
-
-interface Commit {
-  sha: string;
-  message: string;
-  added?: boolean;
-}
-
-/**
- * hero の 1 枚。左が repo の中のファイル、右がそれが描く画面。
- * テキストは SVG ではなく HTML で組んである（選択・翻訳・読み上げが効くように）。
- */
-function RepoToScreen({
-  path,
-  branch,
-  commits,
-  caption,
-}: {
-  path: string;
-  branch: string;
-  commits: Commit[];
-  caption: string;
-}) {
-  return (
-    <figure className="lp__proof">
-      <div className="lp__proof-repo">
-        <div className="lp__proof-head">
-          <code className="lp__proof-path">{path}</code>
-          <code className="lp__proof-branch">{branch}</code>
-        </div>
-        <ol className="lp__proof-log">
-          {commits.map((c) => (
-            <li key={c.sha} className={c.added ? 'is-latest' : undefined}>
-              <code>{c.sha}</code>
-              <span>{c.message}</span>
-            </li>
-          ))}
-        </ol>
-      </div>
-
-      <div className="lp__proof-join" aria-hidden="true">
-        <svg viewBox="0 0 64 24" preserveAspectRatio="none">
-          <path d="M0 12 H52" />
-          <path d="M46 6 L54 12 L46 18" fill="none" />
-        </svg>
-      </div>
-
-      <div className="lp__proof-screen">
-        <WireframePreview />
-      </div>
-
-      <figcaption className="lp__proof-caption">{caption}</figcaption>
-    </figure>
-  );
-}
-
-/**
- * 右側に置くワイヤーフレーム。中身は「その .pen が描く画面」の見立てで、
- * 直近のコミットで足された行だけ色を変えてある。
- */
-function WireframePreview() {
-  return (
-    <svg viewBox="0 0 220 272" className="lp__wire" role="img" aria-hidden="true">
-      <rect className="lp__wire-sheet" x="0.5" y="0.5" width="219" height="271" rx="10" />
-
-      {/* ヘッダー */}
-      <rect className="lp__wire-bar" x="20" y="20" width="70" height="9" rx="2" />
-      <circle className="lp__wire-bar" cx="192" cy="25" r="7" />
-
-      {/* 商品行 */}
-      <rect className="lp__wire-box" x="20" y="46" width="180" height="48" rx="6" />
-      <rect className="lp__wire-fill" x="30" y="55" width="30" height="30" rx="4" />
-      <rect className="lp__wire-bar" x="70" y="59" width="86" height="7" rx="2" />
-      <rect className="lp__wire-bar-soft" x="70" y="72" width="52" height="7" rx="2" />
-
-      <rect className="lp__wire-box" x="20" y="102" width="180" height="48" rx="6" />
-      <rect className="lp__wire-fill" x="30" y="111" width="30" height="30" rx="4" />
-      <rect className="lp__wire-bar" x="70" y="115" width="70" height="7" rx="2" />
-      <rect className="lp__wire-bar-soft" x="70" y="128" width="60" height="7" rx="2" />
-
-      {/* 直近のコミットで足された行 */}
-      <g className="lp__wire-new">
-        <rect x="20" y="158" width="180" height="48" rx="6" />
-        <rect className="lp__wire-new-fill" x="30" y="167" width="30" height="30" rx="4" />
-        <rect className="lp__wire-new-bar" x="70" y="171" width="78" height="7" rx="2" />
-        <rect className="lp__wire-new-bar" x="70" y="184" width="44" height="7" rx="2" opacity="0.55" />
-      </g>
-
-      {/* 合計と支払い */}
-      <rect className="lp__wire-bar-soft" x="20" y="219" width="54" height="7" rx="2" />
-      <rect className="lp__wire-bar" x="150" y="217" width="50" height="10" rx="2" />
-      <rect className="lp__wire-cta" x="20" y="238" width="180" height="18" rx="9" />
-    </svg>
-  );
-}
-
-function GitHubMark() {
-  return (
-    <svg viewBox="0 0 16 16" width="20" height="20" aria-hidden="true">
-      <path
-        fill="currentColor"
-        d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27s1.36.09 2 .27c1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8Z"
-      />
-    </svg>
-  );
-}
-
-/** 文言中の <link>…</link> と <br/> だけを React 要素にする（HTML は差し込まない） */
-function RichText({ html }: { html: string }) {
-  const parts = html.split(/(<link>.*?<\/link>|<br\/>)/g);
-  return (
-    <>
-      {parts.map((part, i) => {
-        if (part === '<br/>') return <br key={i} />;
-        const linkMatch = part.match(/^<link>(.*?)<\/link>$/);
-        if (linkMatch) {
-          return (
-            <a key={i} href="https://www.pencil.dev/" target="_blank" rel="noopener noreferrer">
-              {linkMatch[1]}
-            </a>
-          );
-        }
-        return <span key={i}>{part}</span>;
-      })}
-    </>
   );
 }

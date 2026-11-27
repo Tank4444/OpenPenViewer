@@ -1,11 +1,15 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
-import { useEditor } from '../../pen/state/EditorContext';
+import { memo, useCallback, useEffect, useRef, useState } from 'react';
+import { useEditorActions, useEditorSelector, useEditorStore } from '../../pen/state/EditorContext';
+import { findNode } from '../../pen/state/nodeOps';
+import { ensureLucideLoaded } from '../../pen/renderer/lucideIcons';
 import { saveBinaryFile } from '../../platform/hostBridge';
 
 type ExportFormat = 'pen' | 'fig' | 'svg' | 'png' | 'svg-selection' | 'png-selection';
 
-export function ExportButton() {
-  const { exportPen, selectedNode, state } = useEditor();
+export const ExportButton = memo(function ExportButton() {
+  const store = useEditorStore();
+  const { exportPen } = useEditorActions();
+  const selectedNodeId = useEditorSelector((s) => s.selectedNodeId);
   const [open, setOpen] = useState(false);
   const menuRef = useRef<HTMLDivElement>(null);
 
@@ -44,13 +48,10 @@ export function ExportButton() {
       if (format === 'fig') {
         void (async () => {
           try {
-            const [{ ensureLucideLoaded }, { penToFig }] = await Promise.all([
-              import('../../pen/renderer/lucideIcons'),
-              import('../../pen/figma/figConverter'),
-            ]);
+            const { penToFig } = await import('../../pen/figma/figConverter');
             await ensureLucideLoaded();
-            // Use resolved `state.doc` so component instances (`ref`) export with their full subtree and layout
-            const bytes = penToFig(state.doc);
+            // Use resolved `doc` so component instances (`ref`) export with their full subtree and layout
+            const bytes = penToFig(store.getState().doc);
             await saveBinaryFile(bytes, 'exported.fig', 'Figma Design', ['fig']);
           } catch (err) {
             console.error('Figma (.fig) export failed:', err);
@@ -63,6 +64,7 @@ export function ExportButton() {
       const svg = document.querySelector('.viewer__svg') as SVGSVGElement | null;
       if (!svg) return;
 
+      const selectedNode = selectedNodeId ? findNode(store.getState().doc.children, selectedNodeId) : null;
       if (format === 'svg') {
         exportSvg(svg);
       } else if (format === 'png') {
@@ -85,12 +87,10 @@ export function ExportButton() {
         }
       }
     },
-    [exportPen, selectedNode, state.doc],
+    [exportPen, selectedNodeId, store],
   );
 
-  const canExportSelection = !!selectedNode &&
-    typeof (selectedNode as { width?: unknown }).width === 'number' &&
-    typeof (selectedNode as { height?: unknown }).height === 'number';
+  const canExportSelection = Boolean(selectedNodeId);
 
   return (
     <div ref={menuRef} style={{ position: 'relative' }}>
@@ -157,7 +157,7 @@ export function ExportButton() {
       )}
     </div>
   );
-}
+});
 
 interface BBox { x: number; y: number; width: number; height: number }
 

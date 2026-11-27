@@ -1,3 +1,6 @@
+mod collab_server;
+mod mcp_server;
+
 use notify::{EventKind, RecursiveMode, Watcher};
 use serde::Serialize;
 use std::path::{Path, PathBuf};
@@ -169,18 +172,39 @@ fn watch_pen_file(
     Ok(())
 }
 
+#[tauri::command]
+fn start_collab_host() -> Result<collab_server::CollabHostInfo, String> {
+    collab_server::ensure_collab_server()
+}
+
+#[tauri::command]
+fn start_mcp_bridge(
+    state: State<'_, mcp_server::McpServerState>,
+) -> Result<mcp_server::McpBridgeInfo, String> {
+    mcp_server::start_bridge(&state)
+}
+
+#[tauri::command]
+fn stop_mcp_bridge(state: State<'_, mcp_server::McpServerState>) {
+    state.stop();
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .manage(WatcherState::default())
+        .manage(mcp_server::McpServerState::default())
         .invoke_handler(tauri::generate_handler![
             read_pen_file,
             read_binary_file,
             write_pen_file,
             write_binary_file,
             get_launch_file,
-            watch_pen_file
+            watch_pen_file,
+            start_collab_host,
+            start_mcp_bridge,
+            stop_mcp_bridge
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")

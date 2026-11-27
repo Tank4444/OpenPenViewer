@@ -5,7 +5,7 @@
  */
 
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { useEditor } from '../../pen/state/EditorContext';
+import { useEditorActions, useEditorSelector } from '../../pen/state/EditorContext';
 import type { PenNode } from '../../pen/types';
 import { filterNodeTree } from '../../utils/filterNodeTree';
 
@@ -90,42 +90,61 @@ function collectAncestorIds(nodes: PenNode[], targetId: string): Set<string> {
   return result;
 }
 
-function NodeItem({
-  node,
-  depth,
-  index,
-  parentId,
-  selectedId,
-  selectedIds,
-  expandedIds,
-  visibleIds,
+interface FlatRow {
+  node: PenNode;
+  depth: number;
+  index: number;
+  parentId: string | null;
+  hasKids: boolean;
+  expanded: boolean;
+}
+
+const VIRTUAL_THRESHOLD = 80;
+const ROW_HEIGHT = 28;
+const OVERSCAN = 10;
+
+function flattenVisibleRows(
+  nodes: PenNode[],
+  expandedIds: Set<string>,
+  visibleIds: Set<string> | null,
+  depth = 0,
+  parentId: string | null = null,
+  out: FlatRow[] = [],
+): FlatRow[] {
+  for (let i = 0; i < nodes.length; i++) {
+    const node = nodes[i];
+    if (visibleIds && !visibleIds.has(node.id)) continue;
+    const children = hasChildren(node) ? node.children : [];
+    const hasKids = children.length > 0;
+    const expanded = hasKids && expandedIds.has(node.id);
+    out.push({ node, depth, index: i, parentId, hasKids, expanded });
+    if (expanded) {
+      flattenVisibleRows(children, expandedIds, visibleIds, depth + 1, node.id, out);
+    }
+  }
+  return out;
+}
+
+const NodeRow = memo(function NodeRow({
+  row,
+  isSelected,
+  isMulti,
   onSelect,
   onToggle,
   onReorder,
   onToggleVisibility,
   onToggleLock,
 }: {
-  node: PenNode;
-  depth: number;
-  index: number;
-  /** null = トップレベル（doc.children 直下） */
-  parentId: string | null;
-  selectedId: string | null;
-  selectedIds: Set<string>;
-  expandedIds: Set<string>;
-  /** null = フィルタなし（全表示）。Set のときは含まれる id のみ表示 */
-  visibleIds: Set<string> | null;
+  row: FlatRow;
+  isSelected: boolean;
+  isMulti: boolean;
   onSelect: (id: string) => void;
   onToggle: (id: string) => void;
   onReorder: (parentId: string | null, fromIdx: number, toIdx: number) => void;
   onToggleVisibility: (id: string) => void;
   onToggleLock: (id: string) => void;
 }) {
-  const isSelected = selectedId === node.id;
-  const isMulti = selectedIds.has(node.id);
-  const children = hasChildren(node) ? node.children : [];
-  const hasKids = children.length > 0;
-  const expanded = expandedIds.has(node.id);
+  const { node, depth, index, parentId, hasKids, expanded } = row;
   const name = (node as { name?: string }).name ?? node.id;
   const typeIcon = TYPE_ICONS[node.type] ?? '?';
   const visible = (node as { enabled?: boolean }).enabled !== false;
@@ -140,11 +159,6 @@ function NodeItem({
     },
     [node.id, onToggle],
   );
-
-  // Layers 検索 (#64) の絞り込みで非表示になる行。
-  // フックはすべて呼び終えてから return する — フックより前に返すと
-  // レンダー間で呼び出し数が変わり Rules of Hooks 違反になる。
-  const hidden = Boolean(visibleIds && !visibleIds.has(node.id));
 
   const handleDragStart = (e: React.DragEvent) => {
     e.dataTransfer.setData(
@@ -175,7 +189,6 @@ function NodeItem({
     try {
       const payload = JSON.parse(raw) as { parentId: string | null; fromIdx: number; nodeId: string };
       if (payload.nodeId === node.id) return;
-      // 異なる親間での移動は未対応（同一親内のみ並び替え）
       if (payload.parentId !== parentId) return;
       const toIdx = pos === 'below' ? index + 1 : index;
       onReorder(parentId, payload.fromIdx, toIdx);
@@ -184,80 +197,60 @@ function NodeItem({
     }
   };
 
-  if (hidden) return null;
-
   return (
-    <div>
-      <div
-        data-node-id={node.id}
-        draggable
-        className={`node-tree__item ${isSelected ? 'node-tree__item--selected' : ''} ${isMulti && !isSelected ? 'node-tree__item--multi' : ''} ${dropPos ? `node-tree__item--drop-${dropPos}` : ''}`}
-        style={{ paddingLeft: 8 + depth * 16 }}
-        onClick={() => onSelect(node.id)}
-        onDragStart={handleDragStart}
-        onDragOver={handleDragOver}
-        onDragLeave={handleDragLeave}
-        onDrop={handleDrop}
-      >
-        {hasKids ? (
-          <span className="node-tree__toggle" onClick={handleToggle}>
-            {expanded ? '\u25BE' : '\u25B8'}
-          </span>
-        ) : (
-          <span className="node-tree__toggle-spacer" />
-        )}
-        <span className={`node-tree__type node-tree__type--${node.type}`}>{typeIcon}</span>
-        <span className="node-tree__name" title={name}>
-          {name}
+    <div
+      data-node-id={node.id}
+      draggable
+      className={`node-tree__item ${isSelected ? 'node-tree__item--selected' : ''} ${isMulti && !isSelected ? 'node-tree__item--multi' : ''} ${dropPos ? `node-tree__item--drop-${dropPos}` : ''}`}
+      style={{ paddingLeft: 8 + depth * 16 }}
+      onClick={() => onSelect(node.id)}
+      onDragStart={handleDragStart}
+      onDragOver={handleDragOver}
+      onDragLeave={handleDragLeave}
+      onDrop={handleDrop}
+    >
+      {hasKids ? (
+        <span className="node-tree__toggle" onClick={handleToggle}>
+          {expanded ? '\u25BE' : '\u25B8'}
         </span>
-        <button
-          type="button"
-          className={`node-tree__icon-btn${!visible ? ' node-tree__icon-btn--active' : ''}`}
-          title={visible ? 'Hide (Cmd+Shift+H)' : 'Show'}
-          onClick={(e) => {
-            e.stopPropagation();
-            onToggleVisibility(node.id);
-          }}
-        >
-          {visible ? EYE_ON : EYE_OFF}
-        </button>
-        <button
-          type="button"
-          className={`node-tree__icon-btn${locked ? ' node-tree__icon-btn--active' : ''}`}
-          title={locked ? 'Unlock (Cmd+Shift+L)' : 'Lock'}
-          onClick={(e) => {
-            e.stopPropagation();
-            onToggleLock(node.id);
-          }}
-        >
-          {locked ? LOCK_ON : LOCK_OFF}
-        </button>
-      </div>
-      {expanded &&
-        children.map((child, i) => (
-          <NodeItem
-            key={child.id}
-            node={child}
-            depth={depth + 1}
-            index={i}
-            parentId={node.id}
-            selectedId={selectedId}
-            selectedIds={selectedIds}
-            expandedIds={expandedIds}
-            visibleIds={visibleIds}
-            onSelect={onSelect}
-            onToggle={onToggle}
-            onReorder={onReorder}
-            onToggleVisibility={onToggleVisibility}
-            onToggleLock={onToggleLock}
-          />
-        ))}
+      ) : (
+        <span className="node-tree__toggle-spacer" />
+      )}
+      <span className={`node-tree__type node-tree__type--${node.type}`}>{typeIcon}</span>
+      <span className="node-tree__name" title={name}>
+        {name}
+      </span>
+      <button
+        type="button"
+        className={`node-tree__icon-btn${!visible ? ' node-tree__icon-btn--active' : ''}`}
+        title={visible ? 'Hide (Cmd+Shift+H)' : 'Show'}
+        onClick={(e) => {
+          e.stopPropagation();
+          onToggleVisibility(node.id);
+        }}
+      >
+        {visible ? EYE_ON : EYE_OFF}
+      </button>
+      <button
+        type="button"
+        className={`node-tree__icon-btn${locked ? ' node-tree__icon-btn--active' : ''}`}
+        title={locked ? 'Unlock (Cmd+Shift+L)' : 'Lock'}
+        onClick={(e) => {
+          e.stopPropagation();
+          onToggleLock(node.id);
+        }}
+      >
+        {locked ? LOCK_ON : LOCK_OFF}
+      </button>
     </div>
   );
-}
+});
 
 export const NodeTree = memo(function NodeTree({ collapsed, onTogglePanel }: { collapsed?: boolean; onTogglePanel?: () => void }) {
-  const { state, selectNode, reorderChildren, updateNode } = useEditor();
+  const docChildren = useEditorSelector((s) => s.doc.children);
+  const selectedNodeId = useEditorSelector((s) => s.selectedNodeId);
+  const selectedNodeIds = useEditorSelector((s) => s.selectedNodeIds);
+  const { selectNode, reorderChildren, updateNode } = useEditorActions();
 
   const toggleVisibility = useCallback(
     (id: string) => {
@@ -272,12 +265,12 @@ export const NodeTree = memo(function NodeTree({ collapsed, onTogglePanel }: { c
         }
         return null;
       };
-      const node = find(state.doc.children);
+      const node = find(docChildren);
       if (!node) return;
       const currentlyVisible = (node as { enabled?: boolean }).enabled !== false;
       updateNode(id, { enabled: !currentlyVisible } as Partial<PenNode>);
     },
-    [state.doc.children, updateNode],
+    [docChildren, updateNode],
   );
 
   const toggleLock = useCallback(
@@ -292,19 +285,19 @@ export const NodeTree = memo(function NodeTree({ collapsed, onTogglePanel }: { c
         }
         return null;
       };
-      const node = find(state.doc.children);
+      const node = find(docChildren);
       if (!node) return;
       const currentlyLocked = (node as { locked?: boolean }).locked === true;
       updateNode(id, { locked: !currentlyLocked } as Partial<PenNode>);
     },
-    [state.doc.children, updateNode],
+    [docChildren, updateNode],
   );
   const listRef = useRef<HTMLDivElement>(null);
 
   // 展開状態の管理（トップレベルはデフォルト展開）
   const [expandedIds, setExpandedIds] = useState<Set<string>>(() => {
     const initial = new Set<string>();
-    for (const n of state.doc.children) initial.add(n.id);
+    for (const n of docChildren) initial.add(n.id);
     return initial;
   });
 
@@ -319,7 +312,7 @@ export const NodeTree = memo(function NodeTree({ collapsed, onTogglePanel }: { c
 
   // -- 検索フィルタ
   const [query, setQuery] = useState('');
-  const filter = useMemo(() => filterNodeTree(state.doc.children, query), [state.doc.children, query]);
+  const filter = useMemo(() => filterNodeTree(docChildren, query), [docChildren, query]);
   const filterActive = query.trim().length > 0;
   const visibleIds = filterActive ? filter.visible : null;
 
@@ -350,24 +343,61 @@ export const NodeTree = memo(function NodeTree({ collapsed, onTogglePanel }: { c
   }
 
   // 選択変更時: 祖先を自動展開
-  const [prevSelectedId, setPrevSelectedId] = useState(state.selectedNodeId);
-  if (state.selectedNodeId !== prevSelectedId) {
-    setPrevSelectedId(state.selectedNodeId);
-    if (state.selectedNodeId) {
-      expandOnce(collectAncestorIds(state.doc.children, state.selectedNodeId));
+  const [prevSelectedId, setPrevSelectedId] = useState(selectedNodeId);
+  if (selectedNodeId !== prevSelectedId) {
+    setPrevSelectedId(selectedNodeId);
+    if (selectedNodeId) {
+      expandOnce(collectAncestorIds(docChildren, selectedNodeId));
     }
   }
 
+  const flatRows = useMemo(
+    () => flattenVisibleRows(docChildren, expandedIds, visibleIds),
+    [docChildren, expandedIds, visibleIds],
+  );
+
+  const [scrollTop, setScrollTop] = useState(0);
+  const [viewportHeight, setViewportHeight] = useState(0);
+
+  useEffect(() => {
+    const el = listRef.current;
+    if (!el || typeof ResizeObserver === 'undefined') return;
+    const updateHeight = () => setViewportHeight(el.clientHeight);
+    updateHeight();
+    const ro = new ResizeObserver(updateHeight);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [collapsed]);
+
+  const useVirtual = flatRows.length > VIRTUAL_THRESHOLD && viewportHeight > 0;
+  const startIdx = useVirtual ? Math.max(0, Math.floor(scrollTop / ROW_HEIGHT) - OVERSCAN) : 0;
+  const endIdx = useVirtual
+    ? Math.min(flatRows.length, Math.ceil((scrollTop + viewportHeight) / ROW_HEIGHT) + OVERSCAN)
+    : flatRows.length;
+  const visibleRows = useVirtual ? flatRows.slice(startIdx, endIdx) : flatRows;
+
   // 選択ノードへスクロール（展開のレンダリング後に走らせる）
   useEffect(() => {
-    if (!state.selectedNodeId) return;
-    const id = state.selectedNodeId;
+    if (!selectedNodeId) return;
+    const id = selectedNodeId;
     const raf = requestAnimationFrame(() => {
-      const el = listRef.current?.querySelector(`[data-node-id="${id}"]`);
-      el?.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+      const container = listRef.current;
+      if (!container) return;
+      if (useVirtual) {
+        const idx = flatRows.findIndex((r) => r.node.id === id);
+        if (idx >= 0) {
+          const top = idx * ROW_HEIGHT;
+          if (top < container.scrollTop || top + ROW_HEIGHT > container.scrollTop + container.clientHeight) {
+            container.scrollTop = Math.max(0, top - container.clientHeight / 2);
+          }
+        }
+      } else {
+        const el = container.querySelector(`[data-node-id="${id}"]`);
+        el?.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+      }
     });
     return () => cancelAnimationFrame(raf);
-  }, [state.selectedNodeId]);
+  }, [selectedNodeId, useVirtual, flatRows]);
 
   if (collapsed) {
     return (
@@ -383,8 +413,8 @@ export const NodeTree = memo(function NodeTree({ collapsed, onTogglePanel }: { c
     <div className="node-tree">
       <div className="node-tree__header">
         <span>Layers</span>
-        {state.selectedNodeIds.size > 0 && (
-          <span className="node-tree__count">{state.selectedNodeIds.size} selected</span>
+        {selectedNodeIds.size > 0 && (
+          <span className="node-tree__count">{selectedNodeIds.size} selected</span>
         )}
         {onTogglePanel && (
           <button className="node-tree__toggle-btn" onClick={onTogglePanel} title="Hide Layers">
@@ -418,18 +448,18 @@ export const NodeTree = memo(function NodeTree({ collapsed, onTogglePanel }: { c
             : `${filter.matchCount} match${filter.matchCount === 1 ? '' : 'es'}`}
         </div>
       )}
-      <div className="node-tree__list" ref={listRef}>
-        {state.doc.children.map((node, i) => (
-          <NodeItem
-            key={node.id}
-            node={node}
-            depth={0}
-            index={i}
-            parentId={null}
-            selectedId={state.selectedNodeId}
-            selectedIds={state.selectedNodeIds}
-            expandedIds={expandedIds}
-            visibleIds={visibleIds}
+      <div
+        className="node-tree__list"
+        ref={listRef}
+        onScroll={useVirtual ? (e) => setScrollTop(e.currentTarget.scrollTop) : undefined}
+      >
+        {useVirtual && startIdx > 0 && <div style={{ height: startIdx * ROW_HEIGHT }} />}
+        {visibleRows.map((row) => (
+          <NodeRow
+            key={row.node.id}
+            row={row}
+            isSelected={selectedNodeId === row.node.id}
+            isMulti={selectedNodeIds.has(row.node.id)}
             onSelect={selectNode}
             onToggle={onToggle}
             onReorder={reorderChildren}
@@ -437,6 +467,9 @@ export const NodeTree = memo(function NodeTree({ collapsed, onTogglePanel }: { c
             onToggleLock={toggleLock}
           />
         ))}
+        {useVirtual && endIdx < flatRows.length && (
+          <div style={{ height: (flatRows.length - endIdx) * ROW_HEIGHT }} />
+        )}
       </div>
     </div>
   );

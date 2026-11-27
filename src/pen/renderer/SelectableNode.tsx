@@ -24,6 +24,97 @@ interface Props {
 const HANDLE_SIZE = 8;
 
 export function SelectableNode({ node, children }: Props) {
+  const isLocked = (node as { locked?: boolean }).locked === true;
+  const isActive = useEditorSelector(
+    (s) => !isLocked && (s.selectedNodeId === node.id || s.selectedNodeIds.has(node.id)),
+  );
+
+  if (isActive) {
+    return <SelectedNodeInteractive node={node}>{children}</SelectedNodeInteractive>;
+  }
+
+  return <UnselectedNodeWrapper node={node}>{children}</UnselectedNodeWrapper>;
+}
+
+/**
+ * Fast-path wrapper for unselected nodes (~99.9% of canvas nodes):
+ * 0 refs, 0 local state, 0 resize/drag callbacks.
+ */
+function UnselectedNodeWrapper({ node, children }: Props) {
+  const { selectNode, toggleSelectNode, beginEditing, beginPathEditing } = useEditorActions();
+  const isLocked = (node as { locked?: boolean }).locked === true;
+  const x = node.x ?? 0;
+  const y = node.y ?? 0;
+  const width =
+    typeof (node as { width?: unknown }).width === 'number' ? (node as { width: number }).width : 0;
+  const height =
+    typeof (node as { height?: unknown }).height === 'number' ? (node as { height: number }).height : 0;
+  const rotation = (node as { rotation?: number }).rotation ?? 0;
+  const groupTransform =
+    rotation !== 0 && width > 0 && height > 0
+      ? `rotate(${-rotation} ${x + width / 2} ${y + height / 2})`
+      : undefined;
+
+  const tooltipName = node.name ?? node.id;
+  const tooltipText =
+    width > 0 && height > 0
+      ? `${tooltipName} (${node.type}) — ${Math.round(width)}×${Math.round(height)}`
+      : `${tooltipName} (${node.type})`;
+
+  return (
+    <g
+      data-node-id={node.id}
+      transform={groupTransform}
+      onClick={(e) => {
+        if (isLocked) return;
+        e.stopPropagation();
+        if (e.shiftKey) {
+          toggleSelectNode(node.id);
+        } else {
+          selectNode(node.id);
+        }
+      }}
+      onDoubleClick={(e) => {
+        if (isLocked) return;
+        if (node.type === 'text' || node.type === 'note') {
+          e.stopPropagation();
+          e.preventDefault();
+          beginEditing(node.id);
+        } else if (node.type === 'path') {
+          e.stopPropagation();
+          e.preventDefault();
+          beginPathEditing(node.id);
+        }
+      }}
+      onContextMenu={(e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        window.dispatchEvent(
+          new CustomEvent('pencil-context-menu', {
+            detail: { nodeId: node.id, x: e.clientX, y: e.clientY },
+          }),
+        );
+      }}
+      style={{ cursor: isLocked ? 'default' : 'pointer' }}
+    >
+      <title>{tooltipText}</title>
+      {width > 0 && height > 0 && (
+        <rect
+          data-node-bounds="true"
+          x={x}
+          y={y}
+          width={width}
+          height={height}
+          fill="none"
+          pointerEvents="none"
+        />
+      )}
+      {children}
+    </g>
+  );
+}
+
+function SelectedNodeInteractive({ node, children }: Props) {
   const store = useEditorStore();
   const {
     selectNode,

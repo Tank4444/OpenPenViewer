@@ -20,6 +20,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import type * as YType from 'yjs';
 import type { WebrtcProvider } from 'y-webrtc';
 import type { PenDocument } from '../pen/types';
+import { isTauriHost, startCollabHost, type CollabHostInfo } from '../platform/hostBridge';
 
 export interface CollabPeer {
   id: string;
@@ -39,10 +40,18 @@ export interface CollabState {
   userName: string;
   /** 自分のアバター色 */
   selfColor: string;
+  /** Custom signaling server URL (empty = env default / same-browser BroadcastChannel) */
+  signalingUrl: string;
+  /** Embedded desktop LAN host info when hosting from Tauri */
+  hostInfo: CollabHostInfo | null;
 }
 
 /** リモート由来でない (= 自分が書いた) Y トランザクションの目印 */
 const LOCAL_ORIGIN = 'pencil-local';
+
+const LS_NAME = 'openpenviewer.collab.userName';
+const LS_COLOR = 'openpenviewer.collab.color';
+const LS_SIGNALING = 'openpenviewer.collab.signaling';
 
 /**
  * WebRTC シグナリングサーバー (カンマ区切りで複数可)。
@@ -50,17 +59,34 @@ const LOCAL_ORIGIN = 'pencil-local';
  * (BroadcastChannel) で同期する。クロスデバイスには workers/collab-signaling
  * をデプロイして wss URL を設定する。
  */
-const SIGNALING_SERVERS: string[] = ((import.meta.env.VITE_COLLAB_SIGNALING as string | undefined) ?? '')
+const ENV_SIGNALING_SERVERS: string[] = ((import.meta.env.VITE_COLLAB_SIGNALING as string | undefined) ?? '')
   .split(',')
   .map((s) => s.trim())
   .filter(Boolean);
 
-const PEER_COLORS = ['#ef4444', '#f97316', '#eab308', '#22c55e', '#06b6d4', '#3b82f6', '#8b5cf6', '#ec4899'];
+export const PEER_COLORS = ['#ef4444', '#f97316', '#eab308', '#22c55e', '#06b6d4', '#3b82f6', '#8b5cf6', '#ec4899'];
+
+function readStorage(key: string): string {
+  try {
+    return localStorage.getItem(key) ?? '';
+  } catch {
+    return '';
+  }
+}
+
+function writeStorage(key: string, val: string): void {
+  try {
+    if (val) localStorage.setItem(key, val);
+    else localStorage.removeItem(key);
+  } catch {
+    // ignore
+  }
+}
 
 function generateRoomId(): string {
-  const chars = 'abcdefghijklmnopqrstuvwxyz0123456789';
+  const chars = 'abcdefghjkmnpqrstuvwxyz23456789';
   let id = '';
-  for (let i = 0; i < 8; i++) id += chars[Math.floor(Math.random() * chars.length)];
+  for (let i = 0; i < 4; i++) id += chars[Math.floor(Math.random() * chars.length)];
   return id;
 }
 
@@ -76,12 +102,18 @@ export function useCollab() {
     connected: false,
     roomId: null,
     peers: [],
-    userName: generateUserName(),
-    selfColor: PEER_COLORS[Math.floor(Math.random() * PEER_COLORS.length)],
+    userName: readStorage(LS_NAME) || generateUserName(),
+    selfColor: readStorage(LS_COLOR) || PEER_COLORS[Math.floor(Math.random() * PEER_COLORS.length)],
+    signalingUrl: readStorage(LS_SIGNALING),
+    hostInfo: null,
   }));
 
   const ydocRef = useRef<YType.Doc | null>(null);
   const providerRef = useRef<WebrtcProvider | null>(null);
+  const signalingRef = useRef(state.signalingUrl);
+  useEffect(() => {
+    signalingRef.current = state.signalingUrl;
+  }, [state.signalingUrl]);
   /**
    * join の世代番号。yjs / y-webrtc の動的 import 中に disconnect や
    * 別ルームへの join が起きた場合、古い読み込みが完了しても
@@ -119,6 +151,7 @@ export function useCollab() {
       WebrtcProvider: typeof import('y-webrtc').WebrtcProvider,
       roomId: string,
       initialDoc: PenDocument | null,
+      hostInfo: CollabHostInfo | null = null,
     ) => {
       const ydoc = new Y.Doc();
       const ymap = ydoc.getMap('pen-document');
@@ -128,6 +161,8 @@ export function useCollab() {
         ydoc.transact(() => {
           ymap.set('version', initialDoc.version);
           ymap.set('children', JSON.stringify(initialDoc.children));
+          if (initialDoc.variables) ymap.set('variables', JSON.stringify(initialDoc.variables));
+          if (initialDoc.themes) ymap.set('themes', JSON.stringify(initialDoc.themes));
         }, LOCAL_ORIGIN);
       }
 
@@ -137,16 +172,44 @@ export function useCollab() {
         const version = (ymap.get('version') as string) ?? '1.0';
         const childrenStr = ymap.get('children') as string | undefined;
         if (!childrenStr) return;
+        const varsStr = ymap.get('variables') as string | undefined;
+        const themesStr = ymap.get('themes') as string | undefined;
         try {
-          onDocUpdateRef.current?.({ version, children: JSON.parse(childrenStr) });
+          const nextDoc: PenDocument = {
+            version,
+            children: JSON.parse(childrenStr),
+            ...(varsStr ? { variables: JSON.parse(varsStr) } : {}),
+            ...(themesStr ? { themes: JSON.parse(themesStr) } : {}),
+          };
+          onDocUpdateRef.current?.(nextDoc);
         } catch {
           // ignore parse errors
         }
       });
 
+      const customSignaling = signalingRef.current
+        .split(',')
+        .map((s) => s.trim())
+        .filter(Boolean);
+      const isCodeInvite =
+        typeof window !== 'undefined' &&
+        new URLSearchParams(window.location.search).has('code');
+      const autoHostSignaling =
+        isCodeInvite && typeof window !== 'undefined' && window.location.hostname
+          ? [`ws://${window.location.hostname}:4444`]
+          : [];
+      const signaling =
+        customSignaling.length > 0
+          ? customSignaling
+          : hostInfo
+            ? [`ws://127.0.0.1:${hostInfo.port}`]
+            : autoHostSignaling.length > 0
+              ? autoHostSignaling
+              : ENV_SIGNALING_SERVERS;
+
       // WebRTC Provider
       const provider = new WebrtcProvider(`pencil-viewer-${roomId}`, ydoc, {
-        signaling: SIGNALING_SERVERS,
+        signaling,
       });
 
       // Awareness (自分の presence)
@@ -179,7 +242,7 @@ export function useCollab() {
       ydocRef.current = ydoc;
       providerRef.current = provider;
 
-      setState((prev) => ({ ...prev, connected: true, roomId }));
+      setState((prev) => ({ ...prev, connected: true, roomId, hostInfo }));
     },
     [],
   );
@@ -198,12 +261,18 @@ export function useCollab() {
       // 実際にルームへ入るときに初めて取りに行く。
       void (async () => {
         try {
-          const [Y, webrtc] = await Promise.all([import('yjs'), import('y-webrtc')]);
+          const hostInfoPromise =
+            initialDoc && isTauriHost() && !signalingRef.current ? startCollabHost() : Promise.resolve(null);
+          const [Y, webrtc, hostInfo] = await Promise.all([
+            import('yjs'),
+            import('y-webrtc'),
+            hostInfoPromise,
+          ]);
 
           // 読み込み中に disconnect / 別ルームへの join が起きていたら破棄
           if (joinGenerationRef.current !== generation) return;
 
-          setupRoom(Y, webrtc.WebrtcProvider, roomId, initialDoc);
+          setupRoom(Y, webrtc.WebrtcProvider, roomId, initialDoc, hostInfo);
         } catch (err) {
           // import 失敗や Provider の初期化失敗を握り潰さない。
           // 接続できなかったことが分かるよう未接続状態に戻す。
@@ -235,6 +304,8 @@ export function useCollab() {
     ydoc.transact(() => {
       ymap.set('version', doc.version);
       ymap.set('children', JSON.stringify(doc.children));
+      if (doc.variables) ymap.set('variables', JSON.stringify(doc.variables));
+      if (doc.themes) ymap.set('themes', JSON.stringify(doc.themes));
     }, LOCAL_ORIGIN);
   }, []);
 
@@ -248,22 +319,46 @@ export function useCollab() {
     providerRef.current?.awareness.setLocalStateField('selection', ids);
   }, []);
 
-  /** URL にルーム ID を付与した招待リンクを返す */
+  /** URL にルーム ID を付与した招待リンクを返す (形式: http://<ip/hostname>:<port>/?code=xxxx) */
   const getRoomUrl = useCallback(() => {
     if (!state.roomId) return '';
     const url = new URL(window.location.href);
-    url.searchParams.set('room', state.roomId);
-    url.searchParams.delete('src');
-    url.searchParams.delete('id');
+    const hostInfo = state.hostInfo;
+    if (hostInfo) {
+      const preferredHost =
+        hostInfo.inDomain && hostInfo.hostname ? hostInfo.hostname : hostInfo.ip;
+      url.protocol = 'http:';
+      url.hostname = preferredHost;
+      if (!url.port) url.port = '5173';
+    }
+    url.search = `?code=${encodeURIComponent(state.roomId)}`;
     return url.toString();
-  }, [state.roomId]);
+  }, [state.roomId, state.hostInfo]);
 
   /** ユーザー名を変更 (接続中なら awareness にも反映) */
   const setUserName = useCallback((name: string) => {
+    writeStorage(LS_NAME, name);
     setState((prev) => {
       providerRef.current?.awareness.setLocalStateField('user', { name, color: prev.selfColor });
       return { ...prev, userName: name };
     });
+  }, []);
+
+  /** アバター色を変更 */
+  const setSelfColor = useCallback((color: string) => {
+    writeStorage(LS_COLOR, color);
+    setState((prev) => {
+      providerRef.current?.awareness.setLocalStateField('user', { name: prev.userName, color });
+      return { ...prev, selfColor: color };
+    });
+  }, []);
+
+  /** Signaling サーバー URL を変更 */
+  const setSignalingUrl = useCallback((url: string) => {
+    const trimmed = url.trim();
+    writeStorage(LS_SIGNALING, trimmed);
+    signalingRef.current = trimmed;
+    setState((prev) => ({ ...prev, signalingUrl: trimmed }));
   }, []);
 
   // Cleanup on unmount
@@ -285,6 +380,8 @@ export function useCollab() {
     disconnect,
     getRoomUrl,
     setUserName,
+    setSelfColor,
+    setSignalingUrl,
     setRemoteHandler,
     setLocalCursor,
     setLocalSelection,

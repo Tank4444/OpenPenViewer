@@ -9,7 +9,7 @@
  * カメラの上に載る別の関心事なので PenViewer に残してある。
  */
 
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { PenDocument } from '../../pen/types';
 import type { ViewBox } from '../../pen/renderer/viewBox';
 import { fitCamera, viewportOf } from './fitCamera';
@@ -24,7 +24,10 @@ export interface Camera {
 
 const MIN_SCALE = 0.05;
 const MAX_SCALE = 64;
-const ZOOM_SENSITIVITY = 0.005;
+const ZOOM_WHEEL_SENSITIVITY = 0.0028;
+const PAN_WHEEL_SPEED = 1.35;
+const SMOOTH_SPEED = 24; // exponential decay rate (higher = snappier, ~140ms settle)
+const REACT_SYNC_INTERVAL_MS = 100; // throttle React UI sync during continuous 60/120Hz pan/zoom
 /** フレームへズームするときに周囲へ足す余白 */
 export const FRAME_PADDING_RATIO = 0.1;
 /** ドキュメント全体に合わせるときの余白。computeViewBox が既に MARGIN を持つので控えめに。 */
@@ -62,13 +65,17 @@ export interface PanZoom {
  * @param doc     表示中のドキュメント。差し替わったら全体にフィットし直す
  * @param baseVb  doc 全体を囲う viewBox（倍率 100% の基準）
  */
-export function usePanZoom(doc: PenDocument, baseVb: ViewBox): PanZoom {
+export function usePanZoom(
+  doc: PenDocument,
+  baseVb: ViewBox,
+  svgRef?: React.RefObject<SVGSVGElement | null>,
+): PanZoom {
   const containerRef = useRef<HTMLDivElement>(null);
 
   // Camera in SVG coordinate space
   // 初期値は暫定（この時点では containerRef が null でビューポート比が分からない）。
   // マウント直後の ResizeObserver で実寸を得てから全体にフィットさせる。
-  const [camera, setCamera] = useState<Camera>(() => ({
+  const [camera, setCameraState] = useState<Camera>(() => ({
     cx: baseVb.x + baseVb.width / 2,
     cy: baseVb.y + baseVb.height / 2,
     svgWidth: baseVb.width,
@@ -81,28 +88,86 @@ export function usePanZoom(doc: PenDocument, baseVb: ViewBox): PanZoom {
   const isSpaceHeld = useRef(false);
   const panStart = useRef({ x: 0, y: 0 });
   const cameraStart = useRef<Camera>(camera);
+  const cameraRef = useRef<Camera>(camera);
   const rafCamId = useRef(0);
   const pendingCam = useRef<Camera | null>(null);
+  const wheelRafId = useRef(0);
+  const wheelTarget = useRef<Camera | null>(null);
+  const wheelLastTime = useRef(0);
+  const lastReactSyncTime = useRef(0);
 
-  const scheduleCamera = useCallback((next: Camera) => {
-    if (rafCamId.current === 0) {
-      setCamera(next);
-      rafCamId.current = requestAnimationFrame(() => {
-        rafCamId.current = 0;
-        if (pendingCam.current) {
-          const cam = pendingCam.current;
-          pendingCam.current = null;
-          setCamera(cam);
-        }
-      });
-    } else {
-      pendingCam.current = next;
+  const applyDomViewBox = useCallback(
+    (cam: Camera): boolean => {
+      const el = containerRef.current;
+      const svg = svgRef?.current;
+      if (!el || !svg) return false;
+      const w = el.clientWidth;
+      const h = el.clientHeight;
+      if (w <= 0 || h <= 0) return false;
+      const asp = w / h;
+      const svgH = cam.svgWidth / asp;
+      const vx = cam.cx - cam.svgWidth / 2;
+      const vy = cam.cy - svgH / 2;
+      svg.setAttribute('viewBox', `${vx} ${vy} ${cam.svgWidth} ${svgH}`);
+      return true;
+    },
+    [svgRef],
+  );
+
+  const stopWheelAnimation = useCallback(() => {
+    if (wheelRafId.current) {
+      cancelAnimationFrame(wheelRafId.current);
+      wheelRafId.current = 0;
     }
+    wheelTarget.current = null;
+    containerRef.current?.classList.remove('viewer__canvas--panning');
   }, []);
+
+  const setCamera: React.Dispatch<React.SetStateAction<Camera>> = useCallback(
+    (action) => {
+      stopWheelAnimation();
+      const next = typeof action === 'function' ? action(cameraRef.current) : action;
+      cameraRef.current = next;
+      applyDomViewBox(next);
+      lastReactSyncTime.current = performance.now();
+      setCameraState(next);
+    },
+    [stopWheelAnimation, applyDomViewBox],
+  );
+
+  const scheduleCamera = useCallback(
+    (next: Camera) => {
+      cameraRef.current = next;
+      if (applyDomViewBox(next)) {
+        const now = performance.now();
+        if (now - lastReactSyncTime.current >= REACT_SYNC_INTERVAL_MS) {
+          lastReactSyncTime.current = now;
+          setCameraState(next);
+        }
+        return;
+      }
+      if (rafCamId.current === 0) {
+        setCameraState(next);
+        rafCamId.current = requestAnimationFrame(() => {
+          rafCamId.current = 0;
+          if (pendingCam.current) {
+            const cam = pendingCam.current;
+            pendingCam.current = null;
+            cameraRef.current = cam;
+            setCameraState(cam);
+          }
+        });
+      } else {
+        pendingCam.current = next;
+      }
+    },
+    [applyDomViewBox],
+  );
 
   useEffect(
     () => () => {
       if (rafCamId.current) cancelAnimationFrame(rafCamId.current);
+      if (wheelRafId.current) cancelAnimationFrame(wheelRafId.current);
     },
     [],
   );
@@ -151,22 +216,18 @@ export function usePanZoom(doc: PenDocument, baseVb: ViewBox): PanZoom {
       const fit = fitCamera(rect, viewportOf(containerRef.current), FRAME_PADDING_RATIO);
       setCamera({ ...fit, svgWidth: clampSvgWidth(fit.svgWidth) });
     },
-    [clampSvgWidth],
+    [clampSvgWidth, setCamera],
   );
 
   // キャンバスのクライアントサイズ追跡（ルーラー用）＋ 初回フィット。
-  //
-  // 初期表示でドキュメント全体が見えるようにする処理をここに置いているのは、
-  // 実際のビューポート比が分かるのが「マウント後」だから。useState の初期化子や
-  // 別の effect では clientWidth/Height がまだ 0 で、幅だけ合わせた結果
-  // 縦長のドキュメントが上下にはみ出していた。
-  useEffect(() => {
+  // useLayoutEffect を使うことで初回ペイント前にフィットを完了し、一瞬のスケール跳ねを防ぐ。
+  useLayoutEffect(() => {
     const el = containerRef.current;
     if (!el) return;
     const update = () => {
       const width = el.clientWidth;
       const height = el.clientHeight;
-      setClientSize({ width, height });
+      setClientSize((prev) => (prev.width === width && prev.height === height ? prev : { width, height }));
       if (width > 0 && height > 0 && fittedDocRef.current !== doc) {
         fittedDocRef.current = doc;
         const fit = fitCamera(baseVb, viewportOf(el), DOC_FIT_PADDING_RATIO);
@@ -177,7 +238,7 @@ export function usePanZoom(doc: PenDocument, baseVb: ViewBox): PanZoom {
     const ro = new ResizeObserver(update);
     ro.observe(el);
     return () => ro.disconnect();
-  }, [doc, baseVb, clampSvgWidth]);
+  }, [doc, baseVb, clampSvgWidth, setCamera]);
 
   // Collab: 参加者が初回 doc を受信したら、その doc 全体にカメラを合わせる
   useEffect(() => {
@@ -208,59 +269,128 @@ export function usePanZoom(doc: PenDocument, baseVb: ViewBox): PanZoom {
   }, []);
 
   // Prevent page scroll — attach native listener with passive:false
+  // Smooth, snappy exponential interpolation for both wheel pan and zoom
   useEffect(() => {
     const el = containerRef.current;
     if (!el) return;
+
+    const tick = (now: number) => {
+      const target = wheelTarget.current;
+      if (!target) {
+        wheelRafId.current = 0;
+        return;
+      }
+      const dt = Math.min(0.05, Math.max(0.001, (now - wheelLastTime.current) / 1000));
+      wheelLastTime.current = now;
+      const alpha = 1 - Math.exp(-SMOOTH_SPEED * dt);
+
+      const cur = cameraRef.current;
+      const nextCx = cur.cx + (target.cx - cur.cx) * alpha;
+      const nextCy = cur.cy + (target.cy - cur.cy) * alpha;
+      const nextW = cur.svgWidth + (target.svgWidth - cur.svgWidth) * alpha;
+
+      const eps = Math.max(0.05, target.svgWidth * 0.00025);
+      const done =
+        Math.abs(target.cx - nextCx) < eps &&
+        Math.abs(target.cy - nextCy) < eps &&
+        Math.abs(target.svgWidth - nextW) < eps;
+
+      const next: Camera = done ? target : { cx: nextCx, cy: nextCy, svgWidth: nextW };
+      cameraRef.current = next;
+      const appliedDirect = applyDomViewBox(next);
+
+      if (done) {
+        wheelTarget.current = null;
+        wheelRafId.current = 0;
+        el.classList.remove('viewer__canvas--panning');
+        lastReactSyncTime.current = now;
+        setCameraState(next);
+      } else {
+        if (!appliedDirect || now - lastReactSyncTime.current >= REACT_SYNC_INTERVAL_MS) {
+          lastReactSyncTime.current = now;
+          setCameraState(next);
+        }
+        wheelRafId.current = requestAnimationFrame(tick);
+      }
+    };
 
     const onWheel = (e: WheelEvent) => {
       e.preventDefault();
       e.stopPropagation();
 
       const rect = el.getBoundingClientRect();
+      if (rect.width <= 0 || rect.height <= 0) return;
+
+      const modeScale = e.deltaMode === 1 ? 32 : e.deltaMode === 2 ? rect.height : 1;
+      const rawDx = e.deltaX * modeScale;
+      const rawDy = e.deltaY * modeScale;
+
+      const base = wheelTarget.current ?? cameraRef.current;
 
       if (e.ctrlKey || e.metaKey) {
-        // Zoom: adjust svgWidth (inverse of scale)
-        const delta = -e.deltaY * ZOOM_SENSITIVITY;
-        const factor = 1 / (1 + delta); // smaller svgWidth = zoomed in
+        // Exponential zoom around cursor
+        const clampedDy = Math.max(-240, Math.min(240, rawDy));
+        const factor = Math.exp(clampedDy * ZOOM_WHEEL_SENSITIVITY);
 
-        // Cursor position as fraction of viewport
         const fx = (e.clientX - rect.left) / rect.width;
         const fy = (e.clientY - rect.top) / rect.height;
+        const viewAspect = rect.width / rect.height;
+        const oldH = base.svgWidth / viewAspect;
+        const newW = clampSvgWidth(base.svgWidth * factor);
+        const newH = newW / viewAspect;
 
-        setCamera((prev) => {
-          const aspect = rect.width / rect.height;
-          const oldH = prev.svgWidth / aspect;
-          const newW = clampSvgWidth(prev.svgWidth * factor);
-          const newH = newW / aspect;
+        const oldLeft = base.cx - base.svgWidth / 2;
+        const oldTop = base.cy - oldH / 2;
+        const cursorSvgX = oldLeft + fx * base.svgWidth;
+        const cursorSvgY = oldTop + fy * oldH;
+        const newLeft = cursorSvgX - fx * newW;
+        const newTop = cursorSvgY - fy * newH;
 
-          // Keep the point under cursor fixed
-          const oldLeft = prev.cx - prev.svgWidth / 2;
-          const oldTop = prev.cy - oldH / 2;
-          const cursorSvgX = oldLeft + fx * prev.svgWidth;
-          const cursorSvgY = oldTop + fy * oldH;
-          const newLeft = cursorSvgX - fx * newW;
-          const newTop = cursorSvgY - fy * newH;
-
-          return {
-            cx: newLeft + newW / 2,
-            cy: newTop + newH / 2,
-            svgWidth: newW,
-          };
-        });
+        wheelTarget.current = {
+          cx: newLeft + newW / 2,
+          cy: newTop + newH / 2,
+          svgWidth: newW,
+        };
       } else {
-        // Pan: convert pixel delta to SVG units
-        const pixelsPerSvgUnit = rect.width / camera.svgWidth;
-        setCamera((prev) => ({
-          ...prev,
-          cx: prev.cx + e.deltaX / pixelsPerSvgUnit,
-          cy: prev.cy + e.deltaY / pixelsPerSvgUnit,
-        }));
+        // Shift + vertical wheel pans horizontally
+        const dxPx = (e.shiftKey && rawDx === 0 ? rawDy : rawDx) * PAN_WHEEL_SPEED;
+        const dyPx = (e.shiftKey && rawDx === 0 ? 0 : rawDy) * PAN_WHEEL_SPEED;
+        const pixelsPerSvgUnit = rect.width / base.svgWidth;
+
+        wheelTarget.current = {
+          ...base,
+          cx: base.cx + dxPx / pixelsPerSvgUnit,
+          cy: base.cy + dyPx / pixelsPerSvgUnit,
+        };
+      }
+
+      if (wheelRafId.current === 0) {
+        const now = performance.now();
+        wheelLastTime.current = now;
+        el.classList.add('viewer__canvas--panning');
+        // Leading-edge step so the first frame responds with zero latency
+        const target = wheelTarget.current;
+        const cur = cameraRef.current;
+        const initAlpha = 0.35;
+        const first: Camera = {
+          cx: cur.cx + (target.cx - cur.cx) * initAlpha,
+          cy: cur.cy + (target.cy - cur.cy) * initAlpha,
+          svgWidth: cur.svgWidth + (target.svgWidth - cur.svgWidth) * initAlpha,
+        };
+        cameraRef.current = first;
+        if (!applyDomViewBox(first)) {
+          setCameraState(first);
+        }
+        wheelRafId.current = requestAnimationFrame(tick);
       }
     };
 
     el.addEventListener('wheel', onWheel, { passive: false });
-    return () => el.removeEventListener('wheel', onWheel);
-  }, [camera.svgWidth, clampSvgWidth]);
+    return () => {
+      el.removeEventListener('wheel', onWheel);
+      stopWheelAnimation();
+    };
+  }, [clampSvgWidth, stopWheelAnimation, applyDomViewBox]);
 
   // Pan: space+drag, middle-button drag, alt+drag, or touch drag (1 本指)
   // Pinch zoom: タッチ 2 本指
@@ -304,13 +434,14 @@ export function usePanZoom(doc: PenDocument, baseVb: ViewBox): PanZoom {
       if (!wantPan) return;
 
       isPanning.current = true;
+      stopWheelAnimation();
       containerRef.current?.classList.add('viewer__canvas--panning');
       panStart.current = { x: e.clientX, y: e.clientY };
       cameraStart.current = { ...camera };
       (e.target as HTMLElement).setPointerCapture(e.pointerId);
       e.preventDefault();
     },
-    [camera],
+    [camera, stopWheelAnimation],
   );
 
   const handlePointerMove = useCallback(
@@ -406,11 +537,15 @@ export function usePanZoom(doc: PenDocument, baseVb: ViewBox): PanZoom {
           isPanning.current = false;
           containerRef.current?.classList.remove('viewer__canvas--panning');
           pinchState.current = null;
+          setCameraState(cameraRef.current);
         }
         return;
       }
-      isPanning.current = false;
-      containerRef.current?.classList.remove('viewer__canvas--panning');
+      if (isPanning.current) {
+        isPanning.current = false;
+        containerRef.current?.classList.remove('viewer__canvas--panning');
+        setCameraState(cameraRef.current);
+      }
     },
     [camera],
   );
@@ -423,21 +558,21 @@ export function usePanZoom(doc: PenDocument, baseVb: ViewBox): PanZoom {
         svgWidth: clampSvgWidth(prev.svgWidth / factor),
       }));
     },
-    [clampSvgWidth],
+    [clampSvgWidth, setCamera],
   );
 
   /** 「全体を表示」。初期表示と同じ計算に揃える。 */
   const fitToDocument = useCallback(() => {
     const fit = fitCamera(baseVb, viewportOf(containerRef.current), DOC_FIT_PADDING_RATIO);
     setCamera({ ...fit, svgWidth: clampSvgWidth(fit.svgWidth) });
-  }, [baseVb, clampSvgWidth]);
+  }, [baseVb, clampSvgWidth, setCamera]);
 
   const zoomTo100 = useCallback(() => {
     setCamera((prev) => ({
       ...prev,
       svgWidth: baseVb.width,
     }));
-  }, [baseVb]);
+  }, [baseVb, setCamera]);
 
   return {
     containerRef,
